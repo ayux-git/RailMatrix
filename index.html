@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Simulated Indian railway berth availability, and PNR status with waitlist confirmation predictions. Not real IRCTC data.">
+  <meta name="color-scheme" content="light">
+  <title>RailMatrix · Berth Availability &amp; PNR Simulator</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230d3b84'/%3E%3Cpath d='M7 5h10a2 2 0 0 1 2 2v7a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V7a2 2 0 0 1 2-2zM5 11h14M9 20l1.5-3M15 20l-1.5-3' fill='none' stroke='%23fff' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <!-- ================= Sticky header with tabs ================= -->
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#search" aria-label="RailMatrix home">
+        <span class="brand-text">
+          <span class="brand-title">RailMatrix</span>
+          <span class="brand-sub">Berth &amp; PNR Status Simulator</span>
+        </span>
+      </a>
+    </div>
+    <nav class="tabs" aria-label="Sections">
+      <div class="tablist" role="tablist">
+        <button type="button" role="tab" id="tab-search" aria-controls="panel-search" aria-selected="true">
+          <span>Search Trains</span>
+        </button>
+        <button type="button" role="tab" id="tab-pnr" aria-controls="panel-pnr" aria-selected="false" tabindex="-1">
+          <span>PNR Status</span>
+        </button>
+      </div>
+    </nav>
+  </header>
+
+  <main id="main" tabindex="-1">
+
+    <!-- ================= 1. Search trains ================= -->
+    <section id="panel-search" class="panel" role="tabpanel" aria-labelledby="tab-search" tabindex="0">
+      <div class="panel-head">
+        <h1>Search trains &amp; berth availability</h1>
+        <p class="lead">Pick a route, date and quota to see simulated class-wise availability.</p>
+      </div>
+
+      <form id="searchForm" class="card form-card" novalidate>
+        <div class="route-row">
+          <div class="field">
+            <label for="origin">From</label>
+            <input id="origin" name="origin" type="text" list="stationList" autocomplete="off" spellcheck="false"
+                   placeholder="e.g. New Delhi (NDLS)" aria-describedby="origin-error" required>
+            <p class="field-error" id="origin-error" aria-live="polite"></p>
+          </div>
+
+          <button type="button" id="swapBtn" class="swap-btn" aria-label="Swap origin and destination stations">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 4v16M3 8l4-4 4 4M17 20V4M21 16l-4 4-4-4"/></svg>
+          </button>
+
+          <div class="field">
+            <label for="destination">To</label>
+            <input id="destination" name="destination" type="text" list="stationList" autocomplete="off" spellcheck="false"
+                   placeholder="e.g. Ludhiana Junction (LDH)" aria-describedby="destination-error" required>
+            <p class="field-error" id="destination-error" aria-live="polite"></p>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="field">
+            <label for="travelDate">Travel date</label>
+            <input id="travelDate" name="travelDate" type="date" aria-describedby="travelDate-hint travelDate-error" required>
+            <p class="field-hint" id="travelDate-hint">Bookings open up to 120 days ahead.</p>
+            <p class="field-error" id="travelDate-error" aria-live="polite"></p>
+          </div>
+          <div class="field">
+            <label for="quota">Quota</label>
+            <select id="quota" name="quota" aria-describedby="quota-error" required></select>
+            <p class="field-error" id="quota-error" aria-live="polite"></p>
+          </div>
+        </div>
+
+        <div id="quotaNote" class="note" role="note" aria-live="polite" hidden></div>
+
+        <div class="form-actions">
+          <div class="quick-routes" aria-label="Popular routes">
+            <span class="quick-label">Popular:</span>
+            <div id="quickRoutes" class="chip-row"></div>
+          </div>
+          <button type="submit" id="searchBtn" class="btn btn-primary">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14"/><path d="M21 21l-4.3-4.3"/></svg>
+            <span class="btn-label">Search trains</span>
+          </button>
+        </div>
+      </form>
+      <datalist id="stationList"></datalist>
+
+      <div id="searchResults" class="results" aria-live="polite"></div>
+    </section>
+
+    <!-- ================= 2. PNR status ================= -->
+    <section id="panel-pnr" class="panel" role="tabpanel" aria-labelledby="tab-pnr" tabindex="0" hidden>
+      <div class="panel-head">
+        <h1>PNR status tracker</h1>
+        <p class="lead">Enter a 10-digit PNR to see simulated booking status, current status and confirmation chance for each passenger.</p>
+      </div>
+
+      <form id="pnrForm" class="card form-card" novalidate>
+        <div class="pnr-row">
+          <div class="field field-grow">
+            <label for="pnrInput">PNR number</label>
+            <input id="pnrInput" name="pnr" type="text" inputmode="numeric" autocomplete="off" spellcheck="false"
+                   placeholder="10-digit PNR, e.g. 4521896307" aria-describedby="pnr-hint pnrInput-error" required>
+            <p class="field-hint" id="pnr-hint"><span id="pnrCounter">0/10 digits</span></p>
+            <p class="field-error" id="pnrInput-error" aria-live="polite"></p>
+          </div>
+          <button type="submit" id="pnrBtn" class="btn btn-primary">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14"/><path d="M21 21l-4.3-4.3"/></svg>
+            <span class="btn-label">Check status</span>
+          </button>
+        </div>
+
+        <div class="sample-block">
+          <h2 class="mini-heading" id="samplesHeading">Try a sample PNR</h2>
+          <div id="sampleChips" class="chip-row" role="group" aria-labelledby="samplesHeading"></div>
+          <p class="field-hint">Simulator rule: PNRs starting with 0 or 9 are treated as “not found”.</p>
+        </div>
+      </form>
+
+      <div id="pnrResult" class="results" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <p><strong>Simulator only.</strong> All trains, availability, fares, PNRs and predictions are randomly generated for learning and demonstration. This is <strong>not</strong> real IRCTC or Indian Railways data. Do not use it to plan real journeys.</p>
+      <p class="footer-meta">Built and Developed by Team Rate Limit.</p>
+    </div>
+  </footer>
+
+  <!-- Toast notifications -->
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-relevant="additions text" aria-label="Notifications"></div>
+
+  <script src="js/data.js" defer></script>
+  <script src="js/probability.js" defer></script>
+  <script src="js/pnr.js" defer></script>
+  <script src="js/app.js" defer></script>
+</body>
+</html>
