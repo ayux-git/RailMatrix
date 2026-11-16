@@ -1,1189 +1,1480 @@
-/**
+/*
  * app.js
  * ---------------------------------------------------------------------------
- * UI logic: rendering, event handling and state for the three sections.
+ * Everything the user sees and clicks on: the forms, the results, the
+ * pop-up notifications and the tabs.
  *
- *   1. DOM helpers + icons    4. Train search (form, validation, results)
- *   2. Toast notifications    5. Class cards, details panel, refresh
- *   3. Tabs                   6. PNR status tracker (with predictions)
- *                             7. Init
+ * Sections in this file:
+ *   1. Page elements we use
+ *   2. Small helpers (safe text, icons, badges)
+ *   3. Alert pop-ups (messages shown with alert())
+ *   4. Tabs ("Search Trains" / "PNR Status")
+ *   5. Train search form and validation
+ *   6. Search results, train cards and class details
+ *   7. PNR status tracker
+ *   8. Start the app
  *
- * Security: user input is never rendered with innerHTML. Every node is built
- * with createElement / textContent through the el() helper.
+ * How we put HTML on the page:
+ *   We write HTML as text using template strings (the `backtick` strings)
+ *   and put it on the page with element.innerHTML = ...
+ *   Any text that could come from the user or from data is first passed
+ *   through escapeHtml(), so it is always shown as plain text and can never
+ *   be run as HTML or JavaScript.
  *
- * Depends on: data.js, probability.js, pnr.js (window.RailMatrix)
+ * Uses functions and data from data.js, probability.js and pnr.js.
  * ---------------------------------------------------------------------------
  */
-(function (global, doc) {
-  'use strict';
 
-  const RailMatrix = global.RailMatrix;
-  const { data, dates: D, probability, pnr: PNR } = RailMatrix;
+/* ==========================================================================
+ * 1. Page elements we use
+ * --------------------------------------------------------------------------
+ * The <script> tags in index.html use "defer", so this file runs after the
+ * whole page has loaded and these elements already exist.
+ * ======================================================================== */
 
-  /* ======================================================================
-   * 1. DOM helpers and icons
-   * ==================================================================== */
+// Search tab
+const searchForm = document.getElementById('searchForm');
+const originInput = document.getElementById('origin');
+const destinationInput = document.getElementById('destination');
+const travelDateInput = document.getElementById('travelDate');
+const quotaSelect = document.getElementById('quota');
+const quotaNote = document.getElementById('quotaNote');
+const searchResults = document.getElementById('searchResults');
 
-  const $ = (sel, root) => (root || doc).querySelector(sel);
-  const $$ = (sel, root) => Array.from((root || doc).querySelectorAll(sel));
-  const SVG_NS = 'http://www.w3.org/2000/svg';
+// PNR tab
+const pnrForm = document.getElementById('pnrForm');
+const pnrInput = document.getElementById('pnrInput');
+const pnrCounter = document.getElementById('pnrCounter');
+const pnrResult = document.getElementById('pnrResult');
 
-  function applyAttrs(node, attrs) {
-    if (!attrs) return;
-    Object.keys(attrs).forEach((key) => {
-      const value = attrs[key];
-      if (value === null || value === undefined || value === false) return;
-      if (key === 'text') node.textContent = value;
-      else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2), value);
-      else node.setAttribute(key, value === true ? '' : String(value));
-    });
+
+/* ==========================================================================
+ * 2. Small helpers
+ * ======================================================================== */
+
+/*
+ * Makes text safe to put inside HTML.
+ * For example "<b>" becomes "&lt;b&gt;", so it is shown as the text "<b>"
+ * instead of being treated as a bold tag.
+ */
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/* Text that only screen readers read out (hidden on screen by CSS). */
+function srOnly(text) {
+  return '<span class="sr-only">' + escapeHtml(text) + '</span>';
+}
+
+/* "1 train", "3 trains", "2 classes" */
+function plural(count, word, pluralWord) {
+  if (count === 1) {
+    return count + ' ' + word;
+  }
+  return count + ' ' + (pluralWord || word + 's');
+}
+
+/* 1234 -> "₹1,234" (Indian number format, no paise) */
+const rupeeFormatter = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
+function formatINR(amount) {
+  return rupeeFormatter.format(amount);
+}
+
+/* "hello world" -> "Hello world" */
+function capitalizeFirstLetter(text) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/* ---------- Icons ---------- */
+
+/*
+ * The drawing instructions (SVG "path" data) for each icon.
+ * Each icon is made of one or more lines/shapes.
+ */
+const ICON_PATHS = {
+  check: ['M20 6 9 17l-5-5'],
+  checkCircle: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M8 12.5l2.5 2.5L16 9.5'],
+  rac: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M12 3v18'],
+  hourglass: ['M7 3h10', 'M7 21h10', 'M8 3v3l4 6-4 6v3', 'M16 3v3l-4 6 4 6v3'],
+  ban: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M5.7 5.7l12.6 12.6'],
+  clock: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M12 7v5l3 2'],
+  info: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M12 11v5', 'M12 8h.01'],
+  alert: ['M12 3 2 20h20z', 'M12 10v4', 'M12 17h.01'],
+  xCircle: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M15 9l-6 6', 'M9 9l6 6'],
+  x: ['M18 6 6 18', 'M6 6l12 12'],
+  refresh: ['M20 12a8 8 0 1 1-2.3-5.7', 'M20 4v5h-5'],
+  train: ['M7 4h10a2 2 0 0 1 2 2v8a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V6a2 2 0 0 1 2-2z', 'M5 10h14', 'M9 21l1.5-4', 'M15 21l-1.5-4'],
+  ticket: ['M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4z', 'M14 5v14'],
+  search: ['M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14', 'M21 21l-4.3-4.3'],
+  route: ['M6 19a2 2 0 1 0 0-4a2 2 0 1 0 0 4', 'M18 9a2 2 0 1 0 0-4a2 2 0 1 0 0 4', 'M6 15V9a4 4 0 0 1 4-4h6', 'M18 9v6a4 4 0 0 1-4 4H8'],
+  sparkle: ['M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z'],
+  chevronDown: ['M6 9l6 6 6-6'],
+};
+
+/* Returns the HTML for an icon, e.g. icon('check'). Icons are decorative, so screen readers skip them. */
+function icon(name) {
+  const paths = ICON_PATHS[name] || [];
+  let html = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">';
+  for (const pathData of paths) {
+    html += '<path d="' + pathData + '"></path>';
+  }
+  html += '</svg>';
+  return html;
+}
+
+/* ---------- Status badges ---------- */
+
+/*
+ * For each ticket status: its colour family ("tone"), icon, and meaning.
+ * The tone is used in CSS class names like "badge--success".
+ */
+const STATUS_INFO = {
+  AVL: { tone: 'success', icon: 'check', meaning: 'Available' },
+  CNF: { tone: 'success', icon: 'check', meaning: 'Confirmed' },
+  RAC: { tone: 'warning', icon: 'rac', meaning: 'Reservation Against Cancellation' },
+  WL: { tone: 'danger', icon: 'hourglass', meaning: 'Waitlisted' },
+  NA: { tone: 'neutral', icon: 'ban', meaning: 'Not offered' },
+  NOT_OPEN: { tone: 'info', icon: 'clock', meaning: 'Booking not open yet' },
+  CAN: { tone: 'neutral', icon: 'xCircle', meaning: 'Cancelled' },
+};
+
+/*
+ * A coloured status badge with an icon and text, e.g. [✓ AVAILABLE 12].
+ * size is optional: 'sm' (small) or 'lg' (large).
+ */
+function statusBadge(statusType, text, size) {
+  const info = STATUS_INFO[statusType] || STATUS_INFO.NA;
+  let classes = 'badge badge--' + info.tone;
+  if (size) {
+    classes += ' badge--' + size;
+  }
+  return (
+    '<span class="' + classes + '" title="' + escapeHtml(info.meaning) + '">' +
+    icon(info.icon) +
+    '<span class="badge-text">' + escapeHtml(text) + '</span>' +
+    '</span>'
+  );
+}
+
+/*
+ * The confirmation chance for a WL / RAC ticket, e.g. "64% · MEDIUM",
+ * with a short note underneath. Uses probability.js.
+ */
+function predictionBadge(input) {
+  const result = estimateConfirmationChance(input);
+
+  let iconName = 'alert';
+  if (result.band.key === 'HIGH') {
+    iconName = 'checkCircle';
+  } else if (result.band.key === 'MEDIUM') {
+    iconName = 'rac';
   }
 
-  function appendChildren(node, children) {
-    children.flat(Infinity).forEach((child) => {
-      if (child === null || child === undefined || child === false) return;
-      node.appendChild(child instanceof Node ? child : doc.createTextNode(String(child)));
-    });
+  const badgeText = result.percent + '% · ' + result.band.key;
+  const note = 'needs ~' + result.needed + ', expected ~' + Math.round(result.expected) + ' cancellations';
+
+  return (
+    '<span class="prediction" title="' + escapeHtml(result.explanation) + '">' +
+    '<span class="badge badge--' + result.band.tone + '">' + icon(iconName) + '<span class="badge-text">' + escapeHtml(badgeText) + '</span></span>' +
+    '<span class="prediction-note">' + escapeHtml(note) + '</span>' +
+    '</span>'
+  );
+}
+
+/*
+ * A big centred message box, used for "nothing here yet" and error messages.
+ * options = { tone, iconName, title, text }
+ */
+function stateBlock(options) {
+  const tone = options.tone || 'neutral';
+  const iconName = options.iconName || 'info';
+
+  let textHtml = '';
+  if (options.text) {
+    textHtml = '<p class="state-text">' + escapeHtml(options.text) + '</p>';
   }
 
-  /** Create an HTML element. Strings become text nodes (safe for user input). */
-  function el(tag, attrs, ...children) {
-    const node = doc.createElement(tag);
-    applyAttrs(node, attrs);
-    appendChildren(node, children);
-    return node;
+  return `
+    <div class="state-block state-block--${tone}">
+      <span class="state-icon">${icon(iconName)}</span>
+      <h2 class="state-title">${escapeHtml(options.title)}</h2>
+      ${textHtml}
+    </div>`;
+}
+
+/* ==========================================================================
+ * 3. Alert pop-ups
+ * --------------------------------------------------------------------------
+ * Messages are shown with the browser's built-in alert() box, which appears
+ * on top of the page. The user must press OK to close it.
+ *
+ * Use: showAlert('success' | 'warning' | 'error' | 'info', message, optionalTitle)
+ * ======================================================================== */
+
+/* The default title for each type of message */
+const ALERT_TITLES = {
+  success: '✅ Success',
+  warning: '⚠️ Warning',
+  error: '❌ Error',
+  info: 'ℹ️ Info',
+};
+
+function showAlert(type, message, title) {
+  let heading = ALERT_TITLES[type] || ALERT_TITLES.info;
+  if (title) {
+    heading = title;
   }
 
-  /** Create an SVG element. */
-  function svgEl(tag, attrs, ...children) {
-    const node = doc.createElementNS(SVG_NS, tag);
-    applyAttrs(node, attrs);
-    appendChildren(node, children);
-    return node;
-  }
+  // alert() freezes the page until OK is pressed. We wait one moment first
+  // so the browser can draw the new results BEHIND the pop-up.
+  requestAnimationFrame(function () {
+    setTimeout(function () {
+      alert(heading + '\n\n' + message);
+    }, 0);
+  });
+}
 
-  /** Visually hidden text for screen readers. */
-  const srOnly = (text) => el('span', { class: 'sr-only' }, text);
+/* ==========================================================================
+ * 4. Tabs
+ * --------------------------------------------------------------------------
+ * Two tab buttons switch between two panels. The address bar shows
+ * #search or #pnr, so a link can open a specific tab.
+ * Keyboard: Left/Right arrows move between tabs, Home/End jump to first/last.
+ * ======================================================================== */
 
-  const ICONS = {
-    check: ['M20 6 9 17l-5-5'],
-    checkCircle: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M8 12.5l2.5 2.5L16 9.5'],
-    rac: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M12 3v18'],
-    hourglass: ['M7 3h10', 'M7 21h10', 'M8 3v3l4 6-4 6v3', 'M16 3v3l-4 6 4 6v3'],
-    ban: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M5.7 5.7l12.6 12.6'],
-    clock: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M12 7v5l3 2'],
-    info: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M12 11v5', 'M12 8h.01'],
-    alert: ['M12 3 2 20h20z', 'M12 10v4', 'M12 17h.01'],
-    xCircle: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M15 9l-6 6', 'M9 9l6 6'],
-    x: ['M18 6 6 18', 'M6 6l12 12'],
-    refresh: ['M20 12a8 8 0 1 1-2.3-5.7', 'M20 4v5h-5'],
-    train: ['M7 4h10a2 2 0 0 1 2 2v8a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V6a2 2 0 0 1 2-2z', 'M5 10h14', 'M9 21l1.5-4', 'M15 21l-1.5-4'],
-    ticket: ['M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4z', 'M14 5v14'],
-    search: ['M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14', 'M21 21l-4.3-4.3'],
-    route: ['M6 19a2 2 0 1 0 0-4a2 2 0 1 0 0 4', 'M18 9a2 2 0 1 0 0-4a2 2 0 1 0 0 4', 'M6 15V9a4 4 0 0 1 4-4h6', 'M18 9v6a4 4 0 0 1-4 4H8'],
-    sparkle: ['M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z'],
-    chevronDown: ['M6 9l6 6 6-6'],
-  };
+const TAB_IDS = ['tab-search', 'tab-pnr'];
 
-  /** Build a decorative stroke icon (hidden from assistive tech). */
-  function icon(name, extraClass) {
-    const node = svgEl('svg', {
-      class: `icon${extraClass ? ' ' + extraClass : ''}`,
-      viewBox: '0 0 24 24',
-      'aria-hidden': 'true',
-      focusable: 'false',
-    });
-    (ICONS[name] || []).forEach((d) => node.appendChild(svgEl('path', { d })));
-    return node;
-  }
+/*
+ * Shows one tab and hides the others.
+ * options (all optional):
+ *   focus: true          -> move keyboard focus to the tab
+ *   updateAddress: false -> don't change the #search / #pnr in the address bar
+ */
+function activateTab(tabId, options) {
+  options = options || {};
 
-  const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
-  const formatINR = (n) => inr.format(n);
-  const plural = (n, word, pluralWord) => `${n} ${n === 1 ? word : pluralWord || word + 's'}`;
-  const prefersReducedMotion = () =>
-    !!(global.matchMedia && global.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  for (const id of TAB_IDS) {
+    const tab = document.getElementById(id);
+    const panel = document.getElementById(tab.getAttribute('aria-controls'));
+    const isSelected = id === tabId;
 
-  /** Status -> tone (colour family), icon and plain-language meaning. */
-  const STATUS_META = {
-    AVL: { tone: 'success', icon: 'check', meaning: 'Available' },
-    CNF: { tone: 'success', icon: 'check', meaning: 'Confirmed' },
-    RAC: { tone: 'warning', icon: 'rac', meaning: 'Reservation Against Cancellation' },
-    WL: { tone: 'danger', icon: 'hourglass', meaning: 'Waitlisted' },
-    NA: { tone: 'neutral', icon: 'ban', meaning: 'Not offered' },
-    NOT_OPEN: { tone: 'info', icon: 'clock', meaning: 'Booking not open yet' },
-    CAN: { tone: 'neutral', icon: 'xCircle', meaning: 'Cancelled' },
-  };
+    tab.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+    tab.tabIndex = isSelected ? 0 : -1; // only the selected tab can be reached with Tab
+    panel.hidden = !isSelected;
 
-  /** A status badge: colour + icon + text (never colour alone). */
-  function statusBadge(type, text, size) {
-    const meta = STATUS_META[type] || STATUS_META.NA;
-    return el(
-      'span',
-      { class: `badge badge--${meta.tone}${size ? ' badge--' + size : ''}`, title: meta.meaning },
-      icon(meta.icon),
-      el('span', { class: 'badge-text' }, text)
-    );
-  }
-
-  /**
-   * Confirmation chance for a WL / RAC ticket, shown as a coloured badge
-   * ("64% · MEDIUM") plus a one-line reason. Uses probability.js.
-   */
-  function predictionEl(input) {
-    const res = probability.estimate(input);
-    const iconName = res.band.key === 'HIGH' ? 'checkCircle' : res.band.key === 'MEDIUM' ? 'rac' : 'alert';
-    return el(
-      'span',
-      { class: 'prediction', title: res.explanation },
-      el(
-        'span',
-        { class: `badge badge--${res.band.tone}` },
-        icon(iconName),
-        el('span', { class: 'badge-text' }, `${res.percent}% · ${res.band.key}`)
-      ),
-      el('span', { class: 'prediction-note' }, `needs ~${res.needed}, expected ~${Math.round(res.expected)} cancellations`)
-    );
-  }
-
-  /** Shared empty / error state block. */
-  function stateBlock({ tone, iconName, title, text, action }) {
-    return el(
-      'div',
-      { class: `state-block state-block--${tone || 'neutral'}` },
-      el('span', { class: 'state-icon' }, icon(iconName || 'info')),
-      el('h2', { class: 'state-title' }, title),
-      text ? el('p', { class: 'state-text' }, text) : null,
-      action || null
-    );
-  }
-
-  /* ======================================================================
-   * 2. Toast notifications (stacking, auto-dismiss, pause on hover/focus)
-   * ==================================================================== */
-
-  const Toast = (function () {
-    const DURATION = 5000;
-    const MAX_VISIBLE = 4;
-    const META = {
-      success: { icon: 'checkCircle', title: 'Success' },
-      warning: { icon: 'alert', title: 'Warning' },
-      error: { icon: 'xCircle', title: 'Error' },
-      info: { icon: 'info', title: 'Info' },
-    };
-    let region;
-
-    function show(type, message, title) {
-      region = region || $('#toastRegion');
-      const meta = META[type] || META.info;
-      const closeBtn = el('button', { type: 'button', class: 'toast-close', 'aria-label': 'Dismiss notification' }, icon('x'));
-      const toast = el(
-        'div',
-        { class: `toast toast--${type}` },
-        el('span', { class: 'toast-icon' }, icon(meta.icon)),
-        el(
-          'div',
-          { class: 'toast-body' },
-          el('p', { class: 'toast-title' }, title || meta.title),
-          el('p', { class: 'toast-msg' }, message)
-        ),
-        closeBtn,
-        el('span', { class: 'toast-progress', 'aria-hidden': 'true' })
-      );
-
-      let timer = null;
-      let remaining = DURATION;
-      let startedAt = 0;
-      let running = false;
-      let leaving = false;
-
-      const dismiss = () => {
-        if (leaving) return;
-        leaving = true;
-        clearTimeout(timer);
-        toast.classList.add('toast--leaving');
-        setTimeout(() => toast.remove(), prefersReducedMotion() ? 0 : 220);
-      };
-      const start = () => {
-        if (running || leaving) return;
-        running = true;
-        startedAt = Date.now();
-        timer = setTimeout(dismiss, remaining);
-        toast.classList.remove('is-paused');
-      };
-      const pause = () => {
-        if (!running) return;
-        running = false;
-        clearTimeout(timer);
-        remaining -= Date.now() - startedAt;
-        toast.classList.add('is-paused');
-      };
-
-      toast.dismiss = dismiss;
-      closeBtn.addEventListener('click', dismiss);
-      toast.addEventListener('mouseenter', pause);
-      toast.addEventListener('mouseleave', () => {
-        if (!toast.contains(doc.activeElement)) start();
-      });
-      toast.addEventListener('focusin', pause);
-      toast.addEventListener('focusout', (e) => {
-        if (!toast.contains(e.relatedTarget)) start();
-      });
-
-      region.appendChild(toast);
-      const active = $$('.toast:not(.toast--leaving)', region);
-      if (active.length > MAX_VISIBLE) active.slice(0, active.length - MAX_VISIBLE).forEach((t) => t.dismiss());
-      start();
-      return toast;
+    if (isSelected && options.focus) {
+      tab.focus();
     }
+  }
 
-    return {
-      show,
-      success: (msg, title) => show('success', msg, title),
-      warning: (msg, title) => show('warning', msg, title),
-      error: (msg, title) => show('error', msg, title),
-      info: (msg, title) => show('info', msg, title),
-    };
-  })();
+  if (options.updateAddress !== false) {
+    try {
+      // "tab-pnr" -> "#pnr"
+      history.replaceState(null, '', '#' + tabId.replace('tab-', ''));
+    } catch (error) {
+      // Some browsers block this when the page is opened as a local file. That's fine.
+    }
+  }
+}
 
-  /* ======================================================================
-   * 3. Tabs
-   * ==================================================================== */
+/* Reads #search or #pnr from the address bar. Returns the tab id, or null. */
+function tabIdFromAddress() {
+  const id = 'tab-' + location.hash.replace('#', '');
+  if (TAB_IDS.includes(id)) {
+    return id;
+  }
+  return null;
+}
 
-  const TAB_IDS = ['tab-search', 'tab-pnr'];
+function setUpTabs() {
+  TAB_IDS.forEach(function (id, index) {
+    const tab = document.getElementById(id);
 
-  function activateTab(tabId, options) {
-    const opts = options || {};
-    TAB_IDS.forEach((id) => {
-      const tab = $('#' + id);
-      const selected = id === tabId;
-      tab.setAttribute('aria-selected', selected ? 'true' : 'false');
-      tab.tabIndex = selected ? 0 : -1;
-      $('#' + tab.getAttribute('aria-controls')).hidden = !selected;
-      if (selected && opts.focus) tab.focus();
+    tab.addEventListener('click', function () {
+      activateTab(id);
     });
-    if (opts.updateHash !== false) {
-      try {
-        global.history.replaceState(null, '', '#' + tabId.replace('tab-', ''));
-      } catch (e) {
-        /* some file:// contexts block history changes */
+
+    tab.addEventListener('keydown', function (event) {
+      let nextIndex = null;
+      if (event.key === 'ArrowRight') {
+        nextIndex = (index + 1) % TAB_IDS.length; // wraps from last to first
+      } else if (event.key === 'ArrowLeft') {
+        nextIndex = (index - 1 + TAB_IDS.length) % TAB_IDS.length; // wraps from first to last
+      } else if (event.key === 'Home') {
+        nextIndex = 0;
+      } else if (event.key === 'End') {
+        nextIndex = TAB_IDS.length - 1;
       }
+
+      if (nextIndex !== null) {
+        event.preventDefault();
+        activateTab(TAB_IDS[nextIndex], { focus: true });
+      }
+    });
+  });
+
+  // When the user presses Back/Forward or edits the #part of the address
+  window.addEventListener('hashchange', function () {
+    const id = tabIdFromAddress();
+    if (id) {
+      activateTab(id, { updateAddress: false });
     }
-    if (opts.scroll) global.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+  });
+
+  // Open the tab named in the address, or "Search" by default
+  activateTab(tabIdFromAddress() || 'tab-search', { updateAddress: false });
+}
+
+/* ==========================================================================
+ * 5. Train search form and validation
+ * ======================================================================== */
+
+/*
+ * Information about the current search. It is null until the first search.
+ * Looks like:
+ * {
+ *   from, to          - station objects
+ *   dateISO, date     - travel date as "2026-11-20" and as a Date
+ *   quotaCode         - e.g. 'GN'
+ *   tatkalClosed      - true if Tatkal was chosen but its window isn't open yet
+ *   trains, distance, reason - from getTrainsForRoute()
+ *   refreshCount      - { trainNumber: how many times Refresh was pressed }
+ *   updatedAt         - { trainNumber: Date of the last update }
+ *   openClass         - { trainNumber: class code whose details are open, or null }
+ *   availability      - { trainNumber: { classCode: availability object } }
+ * }
+ */
+let currentSearch = null;
+
+/* "Popular" route buttons: [from, to] */
+const QUICK_ROUTES = [
+  ['NDLS', 'LDH'],
+  ['BCT', 'NDLS'],
+  ['HWH', 'NDLS'],
+  ['MAS', 'SBC'],
+  ['ASR', 'NDLS'],
+];
+
+/*
+ * Finds a station from what the user typed.
+ * Accepts "New Delhi (NDLS)", "NDLS", "ndls" or "New Delhi".
+ * Returns the station object, or null if nothing matches.
+ */
+function findStation(typedText) {
+  const text = String(typedText || '').trim();
+  if (text === '') {
+    return null;
   }
 
-  function tabFromHash() {
-    const id = 'tab-' + (global.location.hash || '').replace('#', '');
-    return TAB_IDS.includes(id) ? id : null;
+  // If the text ends with a code in brackets, like "(NDLS)", use that code
+  let code = text;
+  const bracketMatch = text.match(/\(([A-Za-z]{2,5})\)\s*$/);
+  if (bracketMatch) {
+    code = bracketMatch[1];
+  }
+  code = code.toUpperCase();
+
+  if (STATION_BY_CODE[code]) {
+    return STATION_BY_CODE[code];
   }
 
-  function initTabs() {
-    TAB_IDS.forEach((id, index) => {
-      const tab = $('#' + id);
-      tab.addEventListener('click', () => activateTab(id));
-      tab.addEventListener('keydown', (e) => {
-        let next = null;
-        if (e.key === 'ArrowRight') next = (index + 1) % TAB_IDS.length;
-        else if (e.key === 'ArrowLeft') next = (index - 1 + TAB_IDS.length) % TAB_IDS.length;
-        else if (e.key === 'Home') next = 0;
-        else if (e.key === 'End') next = TAB_IDS.length - 1;
-        if (next !== null) {
-          e.preventDefault();
-          activateTab(TAB_IDS[next], { focus: true });
-        }
-      });
-    });
-    global.addEventListener('hashchange', () => {
-      const id = tabFromHash();
-      if (id) activateTab(id, { updateHash: false });
-    });
-    activateTab(tabFromHash() || 'tab-search', { updateHash: false });
+  // Otherwise try to match the full name or label
+  const lowerText = text.toLowerCase();
+  for (const station of STATIONS) {
+    if (station.name.toLowerCase() === lowerText || station.label.toLowerCase() === lowerText) {
+      return station;
+    }
+  }
+  return null;
+}
+
+/*
+ * Shows (or clears) the red error message under a form field.
+ * Pass an empty message '' to clear the error.
+ */
+function setFieldError(input, message) {
+  const errorElement = document.getElementById(input.id + '-error');
+  if (errorElement) {
+    errorElement.textContent = message || '';
+  }
+  input.setAttribute('aria-invalid', message ? 'true' : 'false');
+
+  const field = input.closest('.field');
+  if (field) {
+    field.classList.toggle('has-error', !!message);
+  }
+}
+
+/* Checks the From or To field. Returns an error message, or '' if it is fine. */
+function checkStationField(input, otherInput, isDestination) {
+  const value = input.value.trim();
+  if (value === '') {
+    return 'Please enter the ' + (isDestination ? 'destination' : 'origin') + ' station.';
   }
 
-  /* ======================================================================
-   * 4. Train search: form, validation, results
-   * ==================================================================== */
+  const station = findStation(value);
+  if (!station) {
+    return 'Station not recognised. Please choose one from the suggestions list.';
+  }
 
-  const state = {
-    search: null, // the current search and its results
+  if (isDestination) {
+    const otherStation = findStation(otherInput.value);
+    if (otherStation && otherStation.code === station.code) {
+      return 'Origin and destination must be different stations.';
+    }
+  }
+  return '';
+}
+
+/* Checks the travel date. Returns an error message, or '' if it is fine. */
+function checkDateField() {
+  const value = travelDateInput.value;
+  if (!value) {
+    return 'Please select a valid travel date.';
+  }
+
+  const date = parseISODate(value);
+  if (!date) {
+    return 'Please enter a valid date.';
+  }
+
+  const days = daysFromToday(date);
+  if (days < 0) {
+    return 'Travel date cannot be in the past.';
+  }
+  if (days > RULES.MAX_ADVANCE_DAYS) {
+    const lastDate = addDays(startOfToday(), RULES.MAX_ADVANCE_DAYS);
+    return 'You can book at most ' + RULES.MAX_ADVANCE_DAYS + ' days ahead (until ' + formatDate(lastDate) + ').';
+  }
+  return '';
+}
+
+/* Checks the quota dropdown. Returns an error message, or '' if it is fine. */
+function checkQuotaField() {
+  if (QUOTA_BY_CODE[quotaSelect.value]) {
+    return '';
+  }
+  return 'Please select a quota.';
+}
+
+/*
+ * Checks one field (by its id), shows or hides its error message,
+ * and returns the message ('' = no error).
+ */
+function validateSearchField(fieldId) {
+  let message = '';
+  if (fieldId === 'origin') {
+    message = checkStationField(originInput, destinationInput, false);
+  } else if (fieldId === 'destination') {
+    message = checkStationField(destinationInput, originInput, true);
+  } else if (fieldId === 'travelDate') {
+    message = checkDateField();
+  } else if (fieldId === 'quota') {
+    message = checkQuotaField();
+  }
+  setFieldError(document.getElementById(fieldId), message);
+  return message;
+}
+
+/* Checks every field. Returns the ids of fields with errors (empty list = all good). */
+function validateSearchForm() {
+  const fieldIds = ['origin', 'destination', 'travelDate', 'quota'];
+  const fieldsWithErrors = [];
+  for (const id of fieldIds) {
+    if (validateSearchField(id)) {
+      fieldsWithErrors.push(id);
+    }
+  }
+  return fieldsWithErrors;
+}
+
+/*
+ * true when a Tatkal quota is chosen for a date that is too far away
+ * (Tatkal only opens for today's and tomorrow's journeys).
+ */
+function isTatkalWindowClosed() {
+  const quota = QUOTA_BY_CODE[quotaSelect.value];
+  const date = parseISODate(travelDateInput.value);
+  if (!quota || !quota.isTatkal || !date) {
+    return false;
+  }
+  const days = daysFromToday(date);
+  return days > RULES.TATKAL_MAX_DAYS_AHEAD && days <= RULES.MAX_ADVANCE_DAYS;
+}
+
+/* Shows a blue info (or orange warning) box under the form about the chosen quota. */
+function updateQuotaNote() {
+  const quota = QUOTA_BY_CODE[quotaSelect.value];
+
+  // General quota has no note
+  if (!quota || !quota.note) {
+    quotaNote.className = 'note';
+    quotaNote.innerHTML = '';
+    quotaNote.hidden = true;
+    return;
+  }
+
+  let tone = 'info';
+  let title = quota.name + ' quota';
+  let text = quota.note;
+
+  if (isTatkalWindowClosed()) {
+    const date = parseISODate(travelDateInput.value);
+    const opensOn = addDays(date, -1);
+    tone = 'warning';
+    title = 'Tatkal window not open for this date';
+    text =
+      quota.name + ' is only bookable for journeys today or tomorrow (within the next 2 days). ' +
+      'For ' + formatDate(date) + ' it opens on ' + formatDateLong(opensOn) + ' at ' + RULES.TATKAL_OPEN_AC + ' (AC) / ' +
+      RULES.TATKAL_OPEN_NON_AC + ' (non-AC). You can still search to see projected fares.';
+  }
+
+  quotaNote.className = 'note note--' + tone;
+  quotaNote.innerHTML = `
+    ${icon(tone === 'warning' ? 'alert' : 'info')}
+    <div>
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(text)}</p>
+    </div>`;
+  quotaNote.hidden = false;
+}
+
+/* The message shown before the first search */
+function showSearchPlaceholder() {
+  searchResults.innerHTML = stateBlock({
+    tone: 'neutral',
+    iconName: 'route',
+    title: 'Find trains on your route',
+    text: 'Enter origin, destination, travel date and quota, then press “Search trains”. Or try one of the popular routes above.',
+  });
+}
+
+/* Runs when the "Search trains" button is pressed */
+function onSearchSubmit(event) {
+  event.preventDefault(); // stop the browser from reloading the page
+
+  // 1. Check the form
+  const fieldsWithErrors = validateSearchForm();
+  if (fieldsWithErrors.length > 0) {
+    document.getElementById(fieldsWithErrors[0]).focus(); // jump to the first wrong field
+    showAlert('error', 'Please fix ' + plural(fieldsWithErrors.length, 'highlighted field') + ' before searching.', 'Check your search');
+    return;
+  }
+
+  // 2. Read the form
+  const from = findStation(originInput.value);
+  const to = findStation(destinationInput.value);
+  originInput.value = from.label; // tidy up what was typed, e.g. "ndls" -> "New Delhi (NDLS)"
+  destinationInput.value = to.label;
+  const dateISO = travelDateInput.value;
+  const date = parseISODate(dateISO);
+  const quotaCode = quotaSelect.value;
+  const tatkalClosed = isTatkalWindowClosed();
+
+  if (tatkalClosed) {
+    showAlert(
+      'warning',
+      'Tatkal for ' + formatDate(date) + ' opens on ' + formatDate(addDays(date, -1)) + '. Showing projected fares only.',
+      'Tatkal window not open'
+    );
+  }
+
+  // 3. Find the trains
+  const routeResult = getTrainsForRoute(from.code, to.code, dateISO);
+  const searchedAt = new Date();
+
+  currentSearch = {
+    from: from,
+    to: to,
+    dateISO: dateISO,
+    date: date,
+    quotaCode: quotaCode,
+    tatkalClosed: tatkalClosed,
+    trains: routeResult.trains,
+    distance: routeResult.distance,
+    reason: routeResult.reason,
+    refreshCount: {},
+    updatedAt: {},
+    openClass: {},
+    availability: {},
   };
 
-  const QUICK_ROUTES = [
-    ['NDLS', 'LDH'],
-    ['BCT', 'NDLS'],
-    ['HWH', 'NDLS'],
-    ['MAS', 'SBC'],
-    ['ASR', 'NDLS'],
-  ];
-
-  /** Accepts "New Delhi (NDLS)", "NDLS", "ndls" or "New Delhi". Returns a station or null. */
-  function resolveStation(value) {
-    const v = String(value || '').trim();
-    if (!v) return null;
-    const match = v.match(/\(([A-Za-z]{2,5})\)\s*$/);
-    const code = (match ? match[1] : v).toUpperCase();
-    if (data.STATION_BY_CODE[code]) return data.STATION_BY_CODE[code];
-    const lower = v.toLowerCase();
-    return data.STATIONS.find((s) => s.name.toLowerCase() === lower || s.label.toLowerCase() === lower) || null;
+  // Pretend each train's data was last updated a few minutes ago
+  for (const train of routeResult.trains) {
+    const minutesAgo = createRandomGenerator(['updated', train.number, dateISO, quotaCode]).int(2, 28);
+    currentSearch.refreshCount[train.number] = 0;
+    currentSearch.updatedAt[train.number] = new Date(searchedAt.getTime() - minutesAgo * 60000);
   }
 
-  function setFieldError(input, message) {
-    const errorEl = $('#' + input.id + '-error');
-    if (errorEl) errorEl.textContent = message || '';
-    input.setAttribute('aria-invalid', message ? 'true' : 'false');
-    const field = input.closest('.field');
-    if (field) field.classList.toggle('has-error', !!message);
+  // 4. Show the results
+  renderSearchResults();
+
+  const routeText = from.code + ' → ' + to.code;
+  if (routeResult.trains.length > 0) {
+    showAlert('success', 'Search complete: ' + plural(routeResult.trains.length, 'train') + ' found for ' + routeText + ' on ' + formatDate(date) + '.');
+  } else {
+    showAlert('warning', 'No trains found for ' + routeText + ' on ' + formatDate(date) + '.', 'No trains found');
   }
+}
 
-  const searchEls = {};
+/* Swaps the From and To stations */
+function swapStations() {
+  const oldOrigin = originInput.value;
+  originInput.value = destinationInput.value;
+  destinationInput.value = oldOrigin;
 
-  function validateStationField(input, otherInput, isDestination) {
-    const value = input.value.trim();
-    if (!value) return `Please enter the ${isDestination ? 'destination' : 'origin'} station.`;
-    const station = resolveStation(value);
-    if (!station) return 'Station not recognised. Please choose one from the suggestions list.';
-    if (isDestination) {
-      const other = resolveStation(otherInput.value);
-      if (other && other.code === station.code) return 'Origin and destination must be different stations.';
-    }
-    return '';
-  }
-
-  function validateDateField() {
-    const value = searchEls.date.value;
-    if (!value) return 'Please select a valid travel date.';
-    const date = D.parseISODate(value);
-    if (!date) return 'Please enter a valid date.';
-    const days = D.daysFromToday(date);
-    if (days < 0) return 'Travel date cannot be in the past.';
-    if (days > data.RULES.MAX_ADVANCE_DAYS) {
-      const last = D.addDays(D.startOfToday(), data.RULES.MAX_ADVANCE_DAYS);
-      return `You can book at most ${data.RULES.MAX_ADVANCE_DAYS} days ahead (until ${D.formatDate(last)}).`;
-    }
-    return '';
-  }
-
-  function validateQuotaField() {
-    return data.QUOTA_BY_CODE[searchEls.quota.value] ? '' : 'Please select a quota.';
-  }
-
-  /** Validate one field by input id and show/hide its inline error. Returns the message. */
-  function validateSearchField(id) {
-    let message = '';
-    if (id === 'origin') message = validateStationField(searchEls.origin, searchEls.destination, false);
-    if (id === 'destination') message = validateStationField(searchEls.destination, searchEls.origin, true);
-    if (id === 'travelDate') message = validateDateField();
-    if (id === 'quota') message = validateQuotaField();
-    setFieldError($('#' + id), message);
-    return message;
-  }
-
-  function validateSearchForm() {
-    const ids = ['origin', 'destination', 'travelDate', 'quota'];
-    const errors = ids.filter((id) => validateSearchField(id));
-    return { valid: errors.length === 0, errors };
-  }
-
-  /** Days ahead when the date is valid, else null. */
-  function selectedDaysAhead() {
-    const date = D.parseISODate(searchEls.date.value);
-    return date ? D.daysFromToday(date) : null;
-  }
-
-  function isTatkalOutsideWindow() {
-    const quota = data.QUOTA_BY_CODE[searchEls.quota.value];
-    const days = selectedDaysAhead();
-    return !!(quota && quota.isTatkal && days !== null && days > data.RULES.TATKAL_MAX_DAYS_AHEAD && days <= data.RULES.MAX_ADVANCE_DAYS);
-  }
-
-  /** Info / warning note under the form for the selected quota. */
-  function updateQuotaNote() {
-    const note = searchEls.quotaNote;
-    const quota = data.QUOTA_BY_CODE[searchEls.quota.value];
-    note.replaceChildren();
-    note.className = 'note';
-    if (!quota || !quota.note) {
-      note.hidden = true;
-      return;
-    }
-    let tone = 'info';
-    let title = `${quota.name} quota`;
-    let text = quota.note;
-    if (isTatkalOutsideWindow()) {
-      const date = D.parseISODate(searchEls.date.value);
-      const opens = D.addDays(date, -1);
-      tone = 'warning';
-      title = 'Tatkal window not open for this date';
-      text =
-        `${quota.name} is only bookable for journeys today or tomorrow (within the next 2 days). ` +
-        `For ${D.formatDate(date)} it opens on ${D.formatDateLong(opens)} at ${data.RULES.TATKAL_OPEN_AC} (AC) / ` +
-        `${data.RULES.TATKAL_OPEN_NON_AC} (non-AC). You can still search to see projected fares.`;
-    }
-    note.classList.add(`note--${tone}`);
-    note.append(
-      icon(tone === 'warning' ? 'alert' : 'info'),
-      el('div', null, el('strong', null, title), el('p', null, text))
-    );
-    note.hidden = false;
-  }
-
-  function renderSearchEmpty() {
-    const results = searchEls.results;
-    results.replaceChildren(
-      stateBlock({
-        tone: 'neutral',
-        iconName: 'route',
-        title: 'Find trains on your route',
-        text: 'Enter origin, destination, travel date and quota, then press “Search trains”. Or try one of the popular routes above.',
-      })
-    );
-  }
-
-  function onSearchSubmit(e) {
-    e.preventDefault();
-
-    const { valid, errors } = validateSearchForm();
-    if (!valid) {
-      $('#' + errors[0]).focus();
-      Toast.error(`Please fix ${plural(errors.length, 'highlighted field')} before searching.`, 'Check your search');
-      return;
-    }
-
-    const from = resolveStation(searchEls.origin.value);
-    const to = resolveStation(searchEls.destination.value);
-    searchEls.origin.value = from.label; // normalise to the canonical label
-    searchEls.destination.value = to.label;
-    const dateISO = searchEls.date.value;
-    const date = D.parseISODate(dateISO);
-    const quotaCode = searchEls.quota.value;
-    const tatkalClosed = isTatkalOutsideWindow();
-
-    if (tatkalClosed) {
-      Toast.warning(
-        `Tatkal for ${D.formatDate(date)} opens on ${D.formatDate(D.addDays(date, -1))}. Showing projected fares only.`,
-        'Tatkal window not open'
-      );
-    }
-
-    const result = data.getTrainsForRoute(from.code, to.code, dateISO);
-    const searchedAt = new Date();
-    state.search = {
-      from,
-      to,
-      dateISO,
-      date,
-      quotaCode,
-      tatkalClosed,
-      ...result,
-      refresh: {},
-      updatedAt: {},
-      openClass: {},
-      availability: {},
-    };
-    result.trains.forEach((t) => {
-      const minsAgo = RailMatrix.rng.createRng('updated', t.number, dateISO, quotaCode).int(2, 28);
-      state.search.refresh[t.number] = 0;
-      state.search.updatedAt[t.number] = new Date(searchedAt.getTime() - minsAgo * 60000);
-    });
-
-    renderSearchResults();
-
-    const route = `${from.code} → ${to.code}`;
-    if (result.trains.length) {
-      Toast.success(`Search complete: ${plural(result.trains.length, 'train')} found for ${route} on ${D.formatDate(date)}.`);
+  for (const id of ['origin', 'destination']) {
+    const input = document.getElementById(id);
+    if (input.value.trim()) {
+      validateSearchField(id);
     } else {
-      Toast.warning(`No trains found for ${route} on ${D.formatDate(date)}.`, 'No trains found');
+      setFieldError(input, '');
     }
   }
+}
 
-  function renderSearchResults() {
-    const s = state.search;
-    const results = searchEls.results;
-    const quota = data.QUOTA_BY_CODE[s.quotaCode];
-
-    if (!s.trains.length) {
-      const text =
-        s.reason === 'too-close'
-          ? `${s.from.name} and ${s.to.name} are only about ${s.distance} km apart, so no long-distance trains are listed. Try a station in another city.`
-          : `No simulated trains run between ${s.from.name} and ${s.to.name} on ${D.formatDateLong(s.date)}. Try another date.`;
-      results.replaceChildren(
-        stateBlock({ tone: 'warning', iconName: 'search', title: 'No trains found', text })
-      );
-      return;
-    }
-
-    const festival = data.getFestivalSeason(s.date);
-    const summary = el(
-      'div',
-      { class: 'results-head' },
-      el(
-        'div',
-        null,
-        el('h2', { class: 'results-title', tabindex: '-1', id: 'searchResultsTitle' }, `${plural(s.trains.length, 'train')} found`),
-        el(
-          'p',
-          { class: 'results-meta' },
-          el('strong', null, `${s.from.code} → ${s.to.code}`),
-          ` · ${D.formatDateLong(s.date)} · ${quota.name} quota · ~${s.distance} km`
-        )
-      ),
-      el(
-        'div',
-        { class: 'results-tags' },
-        festival ? el('span', { class: 'tag tag--warning' }, icon('sparkle'), `${festival.name}: high demand`) : null,
-        s.tatkalClosed ? el('span', { class: 'tag tag--info' }, icon('clock'), 'Tatkal not open yet') : null
-      )
-    );
-
-    const legend = el(
-      'ul',
-      { class: 'status-legend', 'aria-label': 'Status legend' },
-      el('li', null, statusBadge('AVL', 'AVAILABLE', 'sm'), ' berths free'),
-      el('li', null, statusBadge('RAC', 'RAC', 'sm'), ' shared berth'),
-      el('li', null, statusBadge('WL', 'WL', 'sm'), ' waitlist')
-    );
-
-    const list = el('ul', { class: 'train-list' }, s.trains.map((t) => el('li', null, buildTrainCard(t))));
-    results.replaceChildren(summary, legend, list);
-    $('#searchResultsTitle').focus({ preventScroll: true });
+function setUpSearch() {
+  // Station suggestions for the From / To boxes (sorted A to Z)
+  const sortedStations = STATIONS.slice().sort(function (a, b) {
+    return a.name.localeCompare(b.name);
+  });
+  let optionsHtml = '';
+  for (const station of sortedStations) {
+    optionsHtml += '<option value="' + escapeHtml(station.label) + '"></option>';
   }
+  document.getElementById('stationList').innerHTML = optionsHtml;
 
-  function runningDaysEl(days) {
-    const names = D.WEEKDAYS.filter((_, i) => days[i]);
-    const label = days.every(Boolean) ? 'Runs daily' : `Runs on ${names.join(', ')}`;
-    return el(
-      'div',
-      { class: 'run-days' },
-      srOnly(label),
-      el(
-        'ul',
-        { class: 'day-pills', 'aria-hidden': 'true' },
-        D.WEEKDAYS.map((d, i) => el('li', { class: days[i] ? 'is-on' : '', title: `${d}: ${days[i] ? 'runs' : 'does not run'}` }, d.charAt(0)))
-      )
-    );
+  // Quota dropdown
+  let quotaOptionsHtml = '<option value="">Select a quota</option>';
+  for (const quota of QUOTAS) {
+    quotaOptionsHtml += '<option value="' + quota.code + '">' + escapeHtml(quota.name) + ' (' + quota.code + ')</option>';
   }
+  quotaSelect.innerHTML = quotaOptionsHtml;
+  quotaSelect.value = 'GN';
 
-  /* ======================================================================
-   * 5. Train card, class cards, details panel, refresh
-   * ==================================================================== */
+  // Date limits: from today up to 120 days ahead. Default: 4 days from today.
+  const today = startOfToday();
+  travelDateInput.min = toISODate(today);
+  travelDateInput.max = toISODate(addDays(today, RULES.MAX_ADVANCE_DAYS));
+  travelDateInput.value = toISODate(addDays(today, 4));
 
-  function buildTrainCard(train) {
-    const s = state.search;
-    const id = train.number;
-    const card = el('article', { class: 'card train-card', 'aria-labelledby': `t${id}-title`, 'data-train': id });
+  // "Popular" route buttons
+  const quickRoutesBox = document.getElementById('quickRoutes');
+  quickRoutesBox.innerHTML = '';
+  for (const route of QUICK_ROUTES) {
+    const fromStation = STATION_BY_CODE[route[0]];
+    const toStation = STATION_BY_CODE[route[1]];
 
-    const head = el(
-      'header',
-      { class: 'train-head' },
-      el(
-        'div',
-        { class: 'train-title-wrap' },
-        el('h3', { class: 'train-title', id: `t${id}-title` }, el('span', { class: 'train-num' }, id), ' ', el('span', { class: 'train-name' }, train.name)),
-        el('span', { class: `type-badge type-${train.type.toLowerCase()}` }, train.typeLabel)
-      ),
-      runningDaysEl(train.runningDays)
-    );
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'chip';
+    button.setAttribute('aria-label', 'Search ' + fromStation.name + ' to ' + toStation.name);
+    button.textContent = route[0] + ' → ' + route[1];
 
-    const times = el(
-      'div',
-      { class: 'train-times' },
-      el(
-        'div',
-        { class: 'time-block' },
-        srOnly('Departs '),
-        el('strong', { class: 'time' }, D.formatTime(train.departure)),
-        el('span', { class: 'stn' }, s.from.code),
-        el('span', { class: 'stn-name' }, s.from.name)
-      ),
-      el(
-        'div',
-        { class: 'duration' },
-        srOnly('Journey time '),
-        el('span', { class: 'duration-time' }, D.formatDuration(train.duration)),
-        el('span', { class: 'duration-line', 'aria-hidden': 'true' }),
-        el('span', { class: 'duration-km' }, `${train.distance} km`)
-      ),
-      el(
-        'div',
-        { class: 'time-block time-block--end' },
-        srOnly('Arrives '),
-        el(
-          'strong',
-          { class: 'time' },
-          D.formatTime(train.arrival),
-          train.arrivalDayOffset
-            ? el('sup', { class: 'day-offset', title: `Arrives ${plural(train.arrivalDayOffset, 'day')} later` }, `+${train.arrivalDayOffset}`, srOnly(train.arrivalDayOffset === 1 ? ' day' : ' days'))
-            : null
-        ),
-        el('span', { class: 'stn' }, s.to.code),
-        el('span', { class: 'stn-name' }, s.to.name)
-      )
-    );
-
-    const grid = el('ul', { class: 'class-grid', 'aria-label': `Classes on train ${id}` });
-    const details = el('div', { class: 'class-details', id: `t${id}-details`, hidden: true });
-    const refreshBtn = el(
-      'button',
-      { type: 'button', class: 'btn btn-secondary btn-sm refresh-btn', 'aria-label': `Refresh availability for ${id} ${train.name}` },
-      icon('refresh'),
-      el('span', null, 'Refresh')
-    );
-    const updated = el('p', { class: 'updated' });
-    const foot = el('footer', { class: 'train-foot' }, updated, refreshBtn);
-
-    card.append(head, times, grid, details, foot);
-    refreshBtn.addEventListener('click', () => refreshTrain(card, train));
-    fillClassGrid(card, train);
-    return card;
-  }
-
-  function computeAvailability(train) {
-    const s = state.search;
-    const map = {};
-    train.classes.forEach((cls) => {
-      map[cls] = data.getAvailability(train, cls, s.quotaCode, s.dateISO, s.refresh[train.number]);
+    button.addEventListener('click', function () {
+      originInput.value = fromStation.label;
+      destinationInput.value = toStation.label;
+      setFieldError(originInput, '');
+      setFieldError(destinationInput, '');
+      // Submit the form, just like pressing the "Search trains" button
+      if (searchForm.requestSubmit) {
+        searchForm.requestSubmit();
+      } else {
+        searchForm.dispatchEvent(new Event('submit', { cancelable: true })); // for older browsers
+      }
     });
-    s.availability[train.number] = map;
-    return map;
+
+    quickRoutesBox.appendChild(button);
   }
 
-  function updatedText(train) {
-    const at = state.search.updatedAt[train.number];
-    const mins = Math.max(0, Math.round((Date.now() - at.getTime()) / 60000));
-    return `Last updated ${D.formatClock(at)} · ${mins === 0 ? 'just now' : plural(mins, 'min') + ' ago'}`;
-  }
+  // Check the station fields while the user types / leaves them
+  for (const id of ['origin', 'destination']) {
+    const input = document.getElementById(id);
+    const isDestination = id === 'destination';
+    const otherInput = isDestination ? originInput : destinationInput;
+    const otherId = isDestination ? 'origin' : 'destination';
 
-  function fillClassGrid(card, train) {
-    const avl = computeAvailability(train);
-    const grid = $('.class-grid', card);
-    const openCls = state.search.openClass[train.number];
-    grid.replaceChildren(
-      ...train.classes.map((cls) => {
-        const a = avl[cls];
-        const c = data.CLASSES[cls];
-        const meta = STATUS_META[a.status];
-        const btn = el(
-          'button',
-          {
-            type: 'button',
-            class: `class-card class-card--${meta.tone}`,
-            'aria-expanded': openCls === cls ? 'true' : 'false',
-            'aria-controls': `t${train.number}-details`,
-            'data-cls': cls,
-          },
-          el('span', { class: 'cc-top' }, el('span', { class: 'cc-code' }, cls), el('span', { class: 'cc-name' }, c.name)),
-          el('span', { class: 'cc-fare' }, a.fare ? [srOnly('Fare '), formatINR(a.fare.total)] : el('span', { class: 'muted' }, '—')),
-          el('span', { class: 'cc-status' }, srOnly('Status: '), statusBadge(a.status, a.label)),
-          el('span', { class: 'cc-chevron' }, icon('chevronDown'))
-        );
-        btn.addEventListener('click', () => toggleClassDetails(card, train, cls));
-        return el('li', null, btn);
-      })
-    );
-    $('.updated', card).textContent = updatedText(train);
-    if (openCls) renderClassDetails(card, train, openCls);
-  }
-
-  function toggleClassDetails(card, train, cls) {
-    const s = state.search;
-    const isOpen = s.openClass[train.number] === cls;
-    s.openClass[train.number] = isOpen ? null : cls;
-    $$('.class-card', card).forEach((b) => b.setAttribute('aria-expanded', !isOpen && b.dataset.cls === cls ? 'true' : 'false'));
-    const details = $('.class-details', card);
-    if (isOpen) {
-      details.hidden = true;
-      details.replaceChildren();
-    } else {
-      renderClassDetails(card, train, cls);
-    }
-  }
-
-  function berthBar(pct) {
-    return svgEl(
-      'svg',
-      { class: 'berth-bar', viewBox: '0 0 100 8', preserveAspectRatio: 'none', 'aria-hidden': 'true', focusable: 'false' },
-      svgEl('rect', { class: 'berth-bar-track', x: 0, y: 0, width: 100, height: 8, rx: 4 }),
-      pct > 0 ? svgEl('rect', { class: 'berth-bar-fill', x: 0, y: 0, width: Math.max(4, pct), height: 8, rx: 4 }) : null
-    );
-  }
-
-  function statusExplanation(a, train) {
-    const c = data.CLASSES[a.cls];
-    const unit = c.seats ? 'seat' : 'berth';
-    switch (a.status) {
-      case 'AVL':
-        return `${plural(a.count, unit)} available to book right now in this quota.`;
-      case 'RAC':
-        return c.seats
-          ? 'RAC is not issued in chair car classes.'
-          : `You would be RAC ${a.count}: you get a shared side-lower berth and move up as confirmed passengers cancel.`;
-      case 'WL':
-        return `You would be WL ${a.count}. A ${unit} is allotted only if enough passengers cancel; e-tickets still waitlisted after charting are cancelled automatically.`;
-      case 'NOT_OPEN':
-        return `Tatkal booking for this journey opens on ${D.formatDateLong(a.opensAt.date)} at ${a.opensAt.time}. The fare shown is projected.`;
-      default:
-        return `The ${data.QUOTA_BY_CODE[a.quotaCode].name} quota is not offered in ${c.name} on ${train.number}. Try the General quota.`;
-    }
-  }
-
-  function renderClassDetails(card, train, cls) {
-    const s = state.search;
-    const a = s.availability[train.number][cls];
-    const c = data.CLASSES[cls];
-    const details = $('.class-details', card);
-    const quota = data.QUOTA_BY_CODE[s.quotaCode];
-    const titleId = `t${train.number}-${cls}-dtitle`;
-
-    const head = el(
-      'div',
-      { class: 'details-head' },
-      el('h4', { id: titleId }, `${c.name} (${cls}) · ${quota.name} quota`),
-      statusBadge(a.status, a.label, 'lg')
-    );
-    const explain = el('p', { class: 'details-text' }, statusExplanation(a, train));
-
-    // Berth-type breakdown
-    let berthSection = null;
-    if (a.status !== 'NA' && a.status !== 'NOT_OPEN') {
-      const total = a.berths.reduce((sum, b) => sum + b.count, 0);
-      berthSection = el(
-        'section',
-        { class: 'details-section', 'aria-label': c.seats ? 'Seat-type breakdown' : 'Berth-type breakdown' },
-        el('h5', null, c.seats ? 'Seat-type breakdown' : 'Berth-type breakdown'),
-        el(
-          'table',
-          { class: 'berth-table' },
-          el('thead', null, el('tr', null, el('th', { scope: 'col' }, 'Type'), el('th', { scope: 'col' }, 'Free'), el('th', { scope: 'col' }, el('span', { class: 'sr-only' }, 'Share')))),
-          el(
-            'tbody',
-            null,
-            a.berths.map((b) =>
-              el(
-                'tr',
-                null,
-                el('th', { scope: 'row' }, b.type),
-                el('td', { class: 'num' }, String(b.count)),
-                el('td', { class: 'bar-cell' }, berthBar(total ? (b.count / total) * 100 : 0))
-              )
-            )
-          )
-        ),
-        a.status === 'RAC'
-          ? el('p', { class: 'muted small' }, 'No full berths are free. RAC passengers share side-lower berths until a berth is released.')
-          : a.status === 'WL'
-          ? el('p', { class: 'muted small' }, 'No berths or RAC places are free in this quota.')
-          : null
-      );
-    }
-
-    // Fare breakdown
-    let fareSection = null;
-    if (a.fare) {
-      fareSection = el(
-        'section',
-        { class: 'details-section', 'aria-label': 'Fare breakdown' },
-        el('h5', null, 'Fare breakdown (per passenger)'),
-        el(
-          'dl',
-          { class: 'fare-list' },
-          a.fare.parts.map((p) => [el('dt', null, p.label), el('dd', null, (p.amount < 0 ? '−' : '') + formatINR(Math.abs(p.amount)))]),
-          el('dt', { class: 'fare-total' }, 'Total (rounded)'),
-          el('dd', { class: 'fare-total' }, formatINR(a.fare.total))
-        )
-      );
-    }
-
-    const actions = el('div', { class: 'details-actions' }, el('p', { class: 'muted small' }, updatedText(train)));
-    if (a.status === 'RAC' || a.status === 'WL') {
-      actions.appendChild(
-        el(
-          'div',
-          { class: 'chance-inline' },
-          el('span', { class: 'small' }, 'Confirmation chance:'),
-          predictionEl({
-            statusType: a.status,
-            position: a.count,
-            cls,
-            quota: s.quotaCode,
-            daysLeft: D.daysFromToday(s.date),
-            popularity: train.popularity,
-            trainKey: train.number,
-            racPool: a.racPool,
-          })
-        )
-      );
-    }
-
-    details.replaceChildren(
-      el('div', { class: 'details-inner', role: 'region', 'aria-labelledby': titleId }, head, explain, el('div', { class: 'details-grid' }, berthSection, fareSection), actions)
-    );
-    details.hidden = false;
-  }
-
-  function refreshTrain(card, train) {
-    const s = state.search;
-    const before = train.classes.map((cls) => s.availability[train.number][cls].label);
-
-    s.refresh[train.number] += 1;
-    s.updatedAt[train.number] = new Date();
-    fillClassGrid(card, train);
-
-    const after = train.classes.map((cls) => s.availability[train.number][cls].label);
-    const changed = after.filter((label, i) => label !== before[i]).length;
-    Toast.info(
-      `Availability refreshed for ${train.number} ${train.name}: ${changed ? plural(changed, 'class', 'classes') + ' changed' : 'no change'}.`,
-      'Refreshed'
-    );
-  }
-
-  function swapStations() {
-    const o = searchEls.origin.value;
-    searchEls.origin.value = searchEls.destination.value;
-    searchEls.destination.value = o;
-    ['origin', 'destination'].forEach((id) => {
-      if ($('#' + id).value.trim()) validateSearchField(id);
-      else setFieldError($('#' + id), '');
+    // A value was picked or typed and the user moved on
+    input.addEventListener('change', function () {
+      const station = findStation(input.value);
+      if (station) {
+        input.value = station.label;
+      }
+      validateSearchField(id);
+      if (otherInput.value.trim()) {
+        validateSearchField(otherId);
+      }
     });
-  }
 
-  function initSearch() {
-    searchEls.form = $('#searchForm');
-    searchEls.origin = $('#origin');
-    searchEls.destination = $('#destination');
-    searchEls.date = $('#travelDate');
-    searchEls.quota = $('#quota');
-    searchEls.quotaNote = $('#quotaNote');
-    searchEls.results = $('#searchResults');
-    searchEls.submit = $('#searchBtn');
-
-    // Station suggestions
-    $('#stationList').replaceChildren(
-      ...data.STATIONS.slice()
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((st) => el('option', { value: st.label }))
-    );
-
-    // Quota dropdown
-    searchEls.quota.replaceChildren(
-      el('option', { value: '' }, 'Select a quota'),
-      ...data.QUOTAS.map((q) => el('option', { value: q.code }, `${q.name} (${q.code})`))
-    );
-    searchEls.quota.value = 'GN';
-
-    // Date limits: today .. today + 120
-    const today = D.startOfToday();
-    searchEls.date.min = D.toISODate(today);
-    searchEls.date.max = D.toISODate(D.addDays(today, data.RULES.MAX_ADVANCE_DAYS));
-    searchEls.date.value = D.toISODate(D.addDays(today, 4));
-
-    // Popular routes
-    $('#quickRoutes').replaceChildren(
-      ...QUICK_ROUTES.map(([a, b]) => {
-        const from = data.STATION_BY_CODE[a];
-        const to = data.STATION_BY_CODE[b];
-        const chip = el('button', { type: 'button', class: 'chip', 'aria-label': `Search ${from.name} to ${to.name}` }, `${a} → ${b}`);
-        chip.addEventListener('click', () => {
-          searchEls.origin.value = from.label;
-          searchEls.destination.value = to.label;
-          setFieldError(searchEls.origin, '');
-          setFieldError(searchEls.destination, '');
-          searchEls.form.requestSubmit ? searchEls.form.requestSubmit() : searchEls.form.dispatchEvent(new Event('submit', { cancelable: true }));
-        });
-        return chip;
-      })
-    );
-
-    // Live validation: on blur / change, and clear errors as the user fixes them.
-    ['origin', 'destination'].forEach((id) => {
-      const input = $('#' + id);
-      input.addEventListener('change', () => {
-        const st = resolveStation(input.value);
-        if (st) input.value = st.label;
+    // The user left the field
+    input.addEventListener('blur', function () {
+      if (input.value.trim()) {
         validateSearchField(id);
-        const other = id === 'origin' ? 'destination' : 'origin';
-        if ($('#' + other).value.trim()) validateSearchField(other);
-      });
-      input.addEventListener('blur', () => {
-        if (input.value.trim()) validateSearchField(id);
-      });
-      input.addEventListener('input', () => {
-        if (input.getAttribute('aria-invalid') === 'true' && !validateStationField(input, id === 'origin' ? searchEls.destination : searchEls.origin, id === 'destination')) {
-          setFieldError(input, '');
-        }
-      });
-    });
-    searchEls.date.addEventListener('change', () => {
-      validateSearchField('travelDate');
-      updateQuotaNote();
-    });
-    searchEls.quota.addEventListener('change', () => {
-      validateSearchField('quota');
-      updateQuotaNote();
-    });
-
-    $('#swapBtn').addEventListener('click', swapStations);
-    searchEls.form.addEventListener('submit', onSearchSubmit);
-
-    updateQuotaNote();
-    renderSearchEmpty();
-  }
-
-  /* ======================================================================
-   * 6. PNR status tracker (with confirmation predictions)
-   * ==================================================================== */
-
-  const pnrEls = {};
-
-  function updatePnrCounter(len) {
-    const counter = pnrEls.counter;
-    counter.textContent = len === 10 ? '10/10 digits · ready to check' : `${len}/10 digits`;
-    counter.classList.toggle('is-complete', len === 10);
-  }
-
-  function showPnrError(message) {
-    setFieldError(pnrEls.input, message);
-  }
-
-  function initPnrInput() {
-    const input = pnrEls.input;
-    // Block letters/symbols as they are typed.
-    input.addEventListener('beforeinput', (e) => {
-      if (e.inputType === 'insertText' && e.data && /[^\d\s-]/.test(e.data)) {
-        e.preventDefault();
-        showPnrError('Only digits 0–9 are allowed in a PNR.');
       }
     });
-    // Sanitise everything else (paste, autofill, drag and drop): strip non-digits, max 10.
-    input.addEventListener('input', () => {
-      const raw = input.value;
-      const hadInvalid = /[^\d\s-]/.test(raw);
-      let digits = raw.replace(/\D/g, '');
-      const tooLong = digits.length > 10;
-      digits = digits.slice(0, 10);
-      if (digits !== raw) input.value = digits;
-      updatePnrCounter(digits.length);
-      if (hadInvalid) showPnrError('Letters and symbols were removed: a PNR contains digits only.');
-      else if (tooLong) showPnrError('A PNR has exactly 10 digits, so the extra digits were removed.');
-      else showPnrError('');
-    });
-    input.addEventListener('blur', () => {
-      const len = input.value.length;
-      if (len > 0 && len < 10) showPnrError(`Invalid PNR: please enter exactly 10 digits (${len} entered).`);
+
+    // While typing: remove the error as soon as the value becomes correct
+    input.addEventListener('input', function () {
+      const hasError = input.getAttribute('aria-invalid') === 'true';
+      if (hasError && checkStationField(input, otherInput, isDestination) === '') {
+        setFieldError(input, '');
+      }
     });
   }
 
-  function renderPnrError(title, text) {
-    pnrEls.result.replaceChildren(
-      stateBlock({ tone: 'danger', iconName: 'xCircle', title, text })
-    );
+  travelDateInput.addEventListener('change', function () {
+    validateSearchField('travelDate');
+    updateQuotaNote();
+  });
+
+  quotaSelect.addEventListener('change', function () {
+    validateSearchField('quota');
+    updateQuotaNote();
+  });
+
+  document.getElementById('swapBtn').addEventListener('click', swapStations);
+  searchForm.addEventListener('submit', onSearchSubmit);
+
+  updateQuotaNote();
+  showSearchPlaceholder();
+}
+
+/* ==========================================================================
+ * 6. Search results, train cards and class details
+ * ======================================================================== */
+
+function renderSearchResults() {
+  const search = currentSearch;
+  const quota = QUOTA_BY_CODE[search.quotaCode];
+
+  // No trains: show a message and stop
+  if (search.trains.length === 0) {
+    let text;
+    if (search.reason === 'too-close') {
+      text = search.from.name + ' and ' + search.to.name + ' are only about ' + search.distance + ' km apart, so no long-distance trains are listed. Try a station in another city.';
+    } else {
+      text = 'No simulated trains run between ' + search.from.name + ' and ' + search.to.name + ' on ' + formatDateLong(search.date) + '. Try another date.';
+    }
+    searchResults.innerHTML = stateBlock({ tone: 'warning', iconName: 'search', title: 'No trains found', text: text });
+    return;
   }
 
-  function pnrSummaryText(r) {
-    const n = r.summary.total;
-    const word = n === 1 ? 'passenger' : 'passengers';
-    const everyone = n === 1 ? 'the passenger' : n === 2 ? 'both passengers' : `all ${n} passengers`;
-    if (r.isCancelled) return `booking cancelled for ${everyone}`;
-    if (r.summary.wl) return `${r.summary.wl} of ${n} ${word} still on waitlist`;
-    if (r.summary.rac) return `${r.summary.rac} of ${n} ${word} in RAC`;
-    if (r.summary.can) return `${r.summary.cnf} confirmed, ${r.summary.can} cancelled`;
-    return `${everyone} confirmed`;
+  // Extra labels next to the heading
+  let tagsHtml = '';
+  const festival = getFestivalSeason(search.date);
+  if (festival) {
+    tagsHtml += '<span class="tag tag--warning">' + icon('sparkle') + escapeHtml(festival.name + ': high demand') + '</span>';
+  }
+  if (search.tatkalClosed) {
+    tagsHtml += '<span class="tag tag--info">' + icon('clock') + 'Tatkal not open yet</span>';
   }
 
-  function renderPnrResult(r) {
-    const c = data.CLASSES[r.cls];
-    const quota = data.QUOTA_BY_CODE[r.quota];
-    const chartBadge = r.chartPrepared
-      ? el('span', { class: 'badge badge--success' }, icon('checkCircle'), el('span', { class: 'badge-text' }, 'Chart Prepared'))
-      : el('span', { class: 'badge badge--neutral' }, icon('clock'), el('span', { class: 'badge-text' }, 'Chart Not Prepared'));
+  const metaText = ' · ' + formatDateLong(search.date) + ' · ' + quota.name + ' quota · ~' + search.distance + ' km';
 
-    const header = el(
-      'header',
-      { class: 'pnr-head' },
-      el(
-        'div',
-        null,
-        el('h2', { id: 'pnrResultTitle', tabindex: '-1' }, 'PNR ', el('span', { class: 'mono' }, r.pnr)),
-        el('p', { class: 'results-meta' }, pnrSummaryText(r).replace(/^./, (ch) => ch.toUpperCase()))
-      ),
-      el('div', { class: 'pnr-badges' }, r.isSample ? el('span', { class: 'tag tag--info' }, 'Sample') : null, chartBadge)
-    );
+  searchResults.innerHTML = `
+    <div class="results-head">
+      <div>
+        <h2 class="results-title" tabindex="-1" id="searchResultsTitle">${plural(search.trains.length, 'train')} found</h2>
+        <p class="results-meta"><strong>${escapeHtml(search.from.code + ' → ' + search.to.code)}</strong>${escapeHtml(metaText)}</p>
+      </div>
+      <div class="results-tags">${tagsHtml}</div>
+    </div>
 
-    const banner = r.isCancelled
-      ? el(
-          'div',
-          { class: 'note note--neutral', role: 'note' },
-          icon('xCircle'),
-          el('div', null, el('strong', null, 'This booking has been cancelled.'), el('p', null, 'Any refund is credited to the original payment method in 5–7 working days (simulated).'))
-        )
-      : r.chartPrepared && r.summary.wl
-      ? el(
-          'div',
-          { class: 'note note--warning', role: 'note' },
-          icon('alert'),
-          el('div', null, el('strong', null, 'Chart prepared.'), el('p', null, 'Passengers still waitlisted after charting are not allowed to board on an e-ticket.'))
-        )
-      : null;
+    <ul class="status-legend" aria-label="Status legend">
+      <li>${statusBadge('AVL', 'AVAILABLE', 'sm')} berths free</li>
+      <li>${statusBadge('RAC', 'RAC', 'sm')} shared berth</li>
+      <li>${statusBadge('WL', 'WL', 'sm')} waitlist</li>
+    </ul>
 
-    const journey = el(
-      'dl',
-      { class: 'journey-grid' },
-      [
-        ['Train', `${r.train.number} ${r.train.name}`],
-        ['Journey date', D.formatDateLong(r.journeyDate)],
-        ['Class', `${r.cls} · ${c.name}`],
-        ['Quota', `${quota.name} (${quota.code})`],
-        ['Boarding', `${r.from.name} (${r.from.code}) · ${D.formatTime(r.departure)}`],
-        ['Destination', `${r.to.name} (${r.to.code}) · ${D.formatTime(r.arrival)}${r.arrivalDayOffset ? ` (+${r.arrivalDayOffset} day)` : ''}`],
-      ].map(([k, v]) => el('div', { class: 'journey-item' }, el('dt', null, k), el('dd', null, v)))
-    );
+    <ul class="train-list"></ul>`;
 
-    // Prediction column: confirmation chance for passengers still on RAC / WL.
-    const predictionCell = (p) => {
-      const pending = p.current.type === 'WL' || p.current.type === 'RAC';
-      if (p.current.type === 'CNF') return el('span', { class: 'muted small' }, 'Already confirmed');
-      if (p.current.type === 'CAN') return el('span', { class: 'muted small' }, 'Cancelled');
-      if (pending && r.chartPrepared) return el('span', { class: 'muted small' }, 'Chart prepared: not confirmed');
-      return predictionEl({
-        statusType: p.current.type,
-        position: p.current.pos,
-        cls: r.cls,
-        quota: r.quota,
-        daysLeft: r.daysLeft,
-        popularity: r.popularity,
-        trainKey: r.train.number,
-        racPool: data.CANCELLATION_DATA.defaultRacPool[r.cls],
-      });
-    };
-    const rows = r.passengers.map((p) => {
-      const action = predictionCell(p);
-      return el(
-        'tr',
-        null,
-        el('th', { scope: 'row', 'data-label': 'Passenger' }, `Passenger ${p.no}`),
-        el('td', { 'data-label': 'Booking status' }, statusBadge(p.booking.type, p.bookingText)),
-        el('td', { 'data-label': 'Current status' }, statusBadge(p.current.type, p.currentText)),
-        el('td', { 'data-label': 'Prediction' }, action)
-      );
-    });
-
-    const table = el(
-      'div',
-      { class: 'table-wrap' },
-      el(
-        'table',
-        { class: 'pnr-table' },
-        el('caption', { class: 'sr-only' }, `Passenger status for PNR ${r.pnr}`),
-        el(
-          'thead',
-          null,
-          el('tr', null, ['Passenger', 'Booking status', 'Current status', 'Prediction'].map((h) => el('th', { scope: 'col' }, h)))
-        ),
-        el('tbody', null, rows)
-      )
-    );
-
-    const counts = el(
-      'ul',
-      { class: 'count-chips', 'aria-label': 'Status counts' },
-      el('li', null, plural(r.summary.total, 'passenger')),
-      r.summary.cnf ? el('li', null, statusBadge('CNF', `${r.summary.cnf} CNF`, 'sm')) : null,
-      r.summary.rac ? el('li', null, statusBadge('RAC', `${r.summary.rac} RAC`, 'sm')) : null,
-      r.summary.wl ? el('li', null, statusBadge('WL', `${r.summary.wl} WL`, 'sm')) : null,
-      r.summary.can ? el('li', null, statusBadge('CAN', `${r.summary.can} CAN`, 'sm')) : null
-    );
-
-    const foot = el(
-      'p',
-      { class: 'muted small' },
-      `Checked at ${D.formatClock(new Date())}. `,
-      r.chartPrepared ? 'Final chart has been prepared. ' : 'The chart is usually prepared about 4 hours before departure. ',
-      'Prediction = simulated chance of a confirmed berth, from past cancellations on this train ',
-      '(HIGH above 70%, MEDIUM 35–70%, LOW below 35%).'
-    );
-
-    pnrEls.result.replaceChildren(
-      el('article', { class: 'card pnr-card', 'aria-labelledby': 'pnrResultTitle' }, header, banner, journey, counts, table, foot)
-    );
-    $('#pnrResultTitle').focus({ preventScroll: true });
+  // Add one card per train
+  const trainList = searchResults.querySelector('.train-list');
+  for (const train of search.trains) {
+    const listItem = document.createElement('li');
+    listItem.appendChild(buildTrainCard(train));
+    trainList.appendChild(listItem);
   }
 
-  function checkPnr(rawValue) {
-    const check = PNR.validate(rawValue);
-    if (!check.valid) {
-      showPnrError(check.error);
-      pnrEls.input.focus();
-      renderPnrError('Invalid PNR', `${check.error} A PNR is the 10-digit number printed at the top of your ticket.`);
-      Toast.error(check.error.startsWith('Invalid PNR') ? check.error : `Invalid PNR: ${check.error}`);
-      return;
+  // Move screen-reader focus to the results heading (without scrolling)
+  document.getElementById('searchResultsTitle').focus({ preventScroll: true });
+}
+
+/* The small M T W T F S S pills showing which days a train runs */
+function runningDaysHtml(runningDays) {
+  const dayNames = [];
+  let runsEveryDay = true;
+  for (let i = 0; i < 7; i++) {
+    if (runningDays[i]) {
+      dayNames.push(WEEKDAYS[i]);
+    } else {
+      runsEveryDay = false;
+    }
+  }
+  const label = runsEveryDay ? 'Runs daily' : 'Runs on ' + dayNames.join(', ');
+
+  let pillsHtml = '';
+  for (let i = 0; i < 7; i++) {
+    const day = WEEKDAYS[i];
+    const runs = runningDays[i];
+    const title = day + ': ' + (runs ? 'runs' : 'does not run');
+    pillsHtml += '<li' + (runs ? ' class="is-on"' : '') + ' title="' + title + '">' + day.charAt(0) + '</li>';
+  }
+
+  return `
+    <div class="run-days">
+      ${srOnly(label)}
+      <ul class="day-pills" aria-hidden="true">${pillsHtml}</ul>
+    </div>`;
+}
+
+/* Builds the card for one train and returns it (an <article> element). */
+function buildTrainCard(train) {
+  const search = currentSearch;
+  const number = train.number;
+
+  // "+1" next to the arrival time when the train arrives on a later day
+  let dayOffsetHtml = '';
+  if (train.arrivalDayOffset) {
+    const offset = train.arrivalDayOffset;
+    dayOffsetHtml =
+      '<sup class="day-offset" title="Arrives ' + plural(offset, 'day') + ' later">+' + offset +
+      srOnly(offset === 1 ? ' day' : ' days') + '</sup>';
+  }
+
+  const card = document.createElement('article');
+  card.className = 'card train-card';
+  card.setAttribute('aria-labelledby', 't' + number + '-title');
+  card.setAttribute('data-train', number);
+
+  card.innerHTML = `
+    <header class="train-head">
+      <div class="train-title-wrap">
+        <h3 class="train-title" id="t${number}-title"><span class="train-num">${number}</span> <span class="train-name">${escapeHtml(train.name)}</span></h3>
+        <span class="type-badge type-${train.type.toLowerCase()}">${escapeHtml(train.typeLabel)}</span>
+      </div>
+      ${runningDaysHtml(train.runningDays)}
+    </header>
+
+    <div class="train-times">
+      <div class="time-block">
+        ${srOnly('Departs ')}
+        <strong class="time">${formatTime(train.departure)}</strong>
+        <span class="stn">${escapeHtml(search.from.code)}</span>
+        <span class="stn-name">${escapeHtml(search.from.name)}</span>
+      </div>
+      <div class="duration">
+        ${srOnly('Journey time ')}
+        <span class="duration-time">${formatDuration(train.duration)}</span>
+        <span class="duration-line" aria-hidden="true"></span>
+        <span class="duration-km">${train.distance} km</span>
+      </div>
+      <div class="time-block time-block--end">
+        ${srOnly('Arrives ')}
+        <strong class="time">${formatTime(train.arrival)}${dayOffsetHtml}</strong>
+        <span class="stn">${escapeHtml(search.to.code)}</span>
+        <span class="stn-name">${escapeHtml(search.to.name)}</span>
+      </div>
+    </div>
+
+    <ul class="class-grid" aria-label="Classes on train ${number}"></ul>
+
+    <div class="class-details" id="t${number}-details" hidden></div>
+
+    <footer class="train-foot">
+      <p class="updated"></p>
+      <button type="button" class="btn btn-secondary btn-sm refresh-btn" aria-label="Refresh availability for ${number} ${escapeHtml(train.name)}">${icon('refresh')}<span>Refresh</span></button>
+    </footer>`;
+
+  card.querySelector('.refresh-btn').addEventListener('click', function () {
+    refreshTrain(card, train);
+  });
+
+  fillClassGrid(card, train);
+  return card;
+}
+
+/* Gets the availability of every class on a train and saves it in currentSearch */
+function loadAvailability(train) {
+  const search = currentSearch;
+  const byClass = {};
+  for (const cls of train.classes) {
+    byClass[cls] = getAvailability(train, cls, search.quotaCode, search.dateISO, search.refreshCount[train.number]);
+  }
+  search.availability[train.number] = byClass;
+  return byClass;
+}
+
+/* "Last updated 10:42 AM · 5 mins ago" */
+function lastUpdatedText(train) {
+  const updatedAt = currentSearch.updatedAt[train.number];
+  const minutesAgo = Math.max(0, Math.round((Date.now() - updatedAt.getTime()) / 60000));
+  const agoText = minutesAgo === 0 ? 'just now' : plural(minutesAgo, 'min') + ' ago';
+  return 'Last updated ' + formatClock(updatedAt) + ' · ' + agoText;
+}
+
+/* Fills a train card with one button per class (fare + status) */
+function fillClassGrid(card, train) {
+  const availability = loadAvailability(train);
+  const openClass = currentSearch.openClass[train.number];
+
+  let html = '';
+  for (const cls of train.classes) {
+    const avl = availability[cls];
+    const travelClass = CLASSES[cls];
+    const tone = STATUS_INFO[avl.status].tone;
+
+    let fareHtml = '<span class="muted">—</span>';
+    if (avl.fare) {
+      fareHtml = srOnly('Fare ') + formatINR(avl.fare.total);
     }
 
-    pnrEls.input.value = check.pnr;
-    updatePnrCounter(10);
-    showPnrError('');
-    const result = PNR.lookup(check.pnr);
+    html += `
+      <li>
+        <button type="button" class="class-card class-card--${tone}" aria-expanded="${openClass === cls ? 'true' : 'false'}" aria-controls="t${train.number}-details" data-cls="${cls}">
+          <span class="cc-top"><span class="cc-code">${cls}</span><span class="cc-name">${escapeHtml(travelClass.name)}</span></span>
+          <span class="cc-fare">${fareHtml}</span>
+          <span class="cc-status">${srOnly('Status: ')}${statusBadge(avl.status, avl.label)}</span>
+          <span class="cc-chevron">${icon('chevronDown')}</span>
+        </button>
+      </li>`;
+  }
 
-    if (!result.found) {
-      renderPnrError(`PNR ${check.pnr} not found`, result.reason);
-      Toast.error(`PNR ${check.pnr} not found. Please check the number and try again.`, 'PNR not found');
-      return;
+  const grid = card.querySelector('.class-grid');
+  grid.innerHTML = html;
+
+  // Clicking a class opens / closes its details
+  const buttons = grid.querySelectorAll('.class-card');
+  for (const button of buttons) {
+    button.addEventListener('click', function () {
+      toggleClassDetails(card, train, button.dataset.cls);
+    });
+  }
+
+  card.querySelector('.updated').textContent = lastUpdatedText(train);
+
+  // If a class was open before (e.g. before a refresh), show its new details
+  if (openClass) {
+    renderClassDetails(card, train, openClass);
+  }
+}
+
+/* Opens the details of a class, or closes them if they are already open */
+function toggleClassDetails(card, train, cls) {
+  const wasOpen = currentSearch.openClass[train.number] === cls;
+  currentSearch.openClass[train.number] = wasOpen ? null : cls;
+
+  // Update aria-expanded on every class button (only the opened one is "true")
+  for (const button of card.querySelectorAll('.class-card')) {
+    const isThisOneOpen = !wasOpen && button.dataset.cls === cls;
+    button.setAttribute('aria-expanded', isThisOneOpen ? 'true' : 'false');
+  }
+
+  const details = card.querySelector('.class-details');
+  if (wasOpen) {
+    details.hidden = true;
+    details.innerHTML = '';
+  } else {
+    renderClassDetails(card, train, cls);
+  }
+}
+
+/* A small horizontal bar (0 to 100%) used in the berth table */
+function berthBarHtml(percent) {
+  let fillHtml = '';
+  if (percent > 0) {
+    fillHtml = '<rect class="berth-bar-fill" x="0" y="0" width="' + Math.max(4, percent) + '" height="8" rx="4"></rect>';
+  }
+  return (
+    '<svg class="berth-bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true" focusable="false">' +
+    '<rect class="berth-bar-track" x="0" y="0" width="100" height="8" rx="4"></rect>' +
+    fillHtml +
+    '</svg>'
+  );
+}
+
+/* One sentence explaining what a status means for the user */
+function statusExplanation(avl, train) {
+  const travelClass = CLASSES[avl.cls];
+  const unit = travelClass.seats ? 'seat' : 'berth';
+
+  if (avl.status === 'AVL') {
+    return plural(avl.count, unit) + ' available to book right now in this quota.';
+  }
+  if (avl.status === 'RAC') {
+    if (travelClass.seats) {
+      return 'RAC is not issued in chair car classes.';
+    }
+    return 'You would be RAC ' + avl.count + ': you get a shared side-lower berth and move up as confirmed passengers cancel.';
+  }
+  if (avl.status === 'WL') {
+    return 'You would be WL ' + avl.count + '. A ' + unit + ' is allotted only if enough passengers cancel; e-tickets still waitlisted after charting are cancelled automatically.';
+  }
+  if (avl.status === 'NOT_OPEN') {
+    return 'Tatkal booking for this journey opens on ' + formatDateLong(avl.opensAt.date) + ' at ' + avl.opensAt.time + '. The fare shown is projected.';
+  }
+  // 'NA'
+  return 'The ' + QUOTA_BY_CODE[avl.quotaCode].name + ' quota is not offered in ' + travelClass.name + ' on ' + train.number + '. Try the General quota.';
+}
+
+/* Shows the details panel for one class: explanation, berth table, fare table, chance */
+function renderClassDetails(card, train, cls) {
+  const search = currentSearch;
+  const avl = search.availability[train.number][cls];
+  const travelClass = CLASSES[cls];
+  const quota = QUOTA_BY_CODE[search.quotaCode];
+  const titleId = 't' + train.number + '-' + cls + '-dtitle';
+
+  // --- Berth-type table (not shown when the quota isn't offered or Tatkal isn't open) ---
+  let berthHtml = '';
+  if (avl.status !== 'NA' && avl.status !== 'NOT_OPEN') {
+    let totalFree = 0;
+    for (const berth of avl.berths) {
+      totalFree += berth.count;
     }
 
-    renderPnrResult(result);
-    const message = `PNR ${result.pnr} checked: ${pnrSummaryText(result)}.`;
-    if (result.isCancelled) Toast.warning(message);
-    else if (result.summary.wl || result.summary.rac) Toast.info(message, 'PNR checked');
-    else Toast.success(message, 'PNR checked');
+    let rowsHtml = '';
+    for (const berth of avl.berths) {
+      const percent = totalFree ? (berth.count / totalFree) * 100 : 0;
+      rowsHtml += `
+        <tr>
+          <th scope="row">${escapeHtml(berth.type)}</th>
+          <td class="num">${berth.count}</td>
+          <td class="bar-cell">${berthBarHtml(percent)}</td>
+        </tr>`;
+    }
+
+    let noteHtml = '';
+    if (avl.status === 'RAC') {
+      noteHtml = '<p class="muted small">No full berths are free. RAC passengers share side-lower berths until a berth is released.</p>';
+    } else if (avl.status === 'WL') {
+      noteHtml = '<p class="muted small">No berths or RAC places are free in this quota.</p>';
+    }
+
+    const heading = travelClass.seats ? 'Seat-type breakdown' : 'Berth-type breakdown';
+    berthHtml = `
+      <section class="details-section" aria-label="${heading}">
+        <h5>${heading}</h5>
+        <table class="berth-table">
+          <thead>
+            <tr><th scope="col">Type</th><th scope="col">Free</th><th scope="col"><span class="sr-only">Share</span></th></tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        ${noteHtml}
+      </section>`;
   }
 
-  function initPnr() {
-    pnrEls.form = $('#pnrForm');
-    pnrEls.input = $('#pnrInput');
-    pnrEls.counter = $('#pnrCounter');
-    pnrEls.result = $('#pnrResult');
-    pnrEls.submit = $('#pnrBtn');
+  // --- Fare table ---
+  let fareHtml = '';
+  if (avl.fare) {
+    let partsHtml = '';
+    for (const part of avl.fare.parts) {
+      const sign = part.amount < 0 ? '−' : ''; // show discounts with a minus sign
+      partsHtml += '<dt>' + escapeHtml(part.label) + '</dt><dd>' + sign + formatINR(Math.abs(part.amount)) + '</dd>';
+    }
+    fareHtml = `
+      <section class="details-section" aria-label="Fare breakdown">
+        <h5>Fare breakdown (per passenger)</h5>
+        <dl class="fare-list">
+          ${partsHtml}
+          <dt class="fare-total">Total (rounded)</dt>
+          <dd class="fare-total">${formatINR(avl.fare.total)}</dd>
+        </dl>
+      </section>`;
+  }
 
-    initPnrInput();
-    pnrEls.form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      checkPnr(pnrEls.input.value);
+  // --- Confirmation chance (only for RAC and WL) ---
+  let chanceHtml = '';
+  if (avl.status === 'RAC' || avl.status === 'WL') {
+    const prediction = predictionBadge({
+      statusType: avl.status,
+      position: avl.count,
+      cls: cls,
+      quota: search.quotaCode,
+      daysLeft: daysFromToday(search.date),
+      popularity: train.popularity,
+      trainKey: train.number,
+      racPool: avl.racPool,
+    });
+    chanceHtml = '<div class="chance-inline"><span class="small">Confirmation chance:</span>' + prediction + '</div>';
+  }
+
+  const details = card.querySelector('.class-details');
+  details.innerHTML = `
+    <div class="details-inner" role="region" aria-labelledby="${titleId}">
+      <div class="details-head">
+        <h4 id="${titleId}">${escapeHtml(travelClass.name + ' (' + cls + ') · ' + quota.name + ' quota')}</h4>
+        ${statusBadge(avl.status, avl.label, 'lg')}
+      </div>
+      <p class="details-text">${escapeHtml(statusExplanation(avl, train))}</p>
+      <div class="details-grid">
+        ${berthHtml}
+        ${fareHtml}
+      </div>
+      <div class="details-actions">
+        <p class="muted small">${escapeHtml(lastUpdatedText(train))}</p>
+        ${chanceHtml}
+      </div>
+    </div>`;
+  details.hidden = false;
+}
+
+/* The "Refresh" button on a train card: get new numbers and say how many classes changed */
+function refreshTrain(card, train) {
+  const search = currentSearch;
+
+  // Remember the old labels, e.g. ["AVAILABLE 12", "WL 4"]
+  const labelsBefore = [];
+  for (const cls of train.classes) {
+    labelsBefore.push(search.availability[train.number][cls].label);
+  }
+
+  search.refreshCount[train.number] += 1;
+  search.updatedAt[train.number] = new Date();
+  fillClassGrid(card, train);
+
+  // Count how many labels are different now
+  let changedCount = 0;
+  train.classes.forEach(function (cls, i) {
+    if (search.availability[train.number][cls].label !== labelsBefore[i]) {
+      changedCount++;
+    }
+  });
+
+  const changeText = changedCount ? plural(changedCount, 'class', 'classes') + ' changed' : 'no change';
+  showAlert('info', 'Availability refreshed for ' + train.number + ' ' + train.name + ': ' + changeText + '.', 'Refreshed');
+}
+
+/* ==========================================================================
+ * 7. PNR status tracker
+ * ======================================================================== */
+
+/* Updates the "7/10 digits" counter under the PNR box */
+function updatePnrCounter(length) {
+  if (length === 10) {
+    pnrCounter.textContent = '10/10 digits · ready to check';
+  } else {
+    pnrCounter.textContent = length + '/10 digits';
+  }
+  pnrCounter.classList.toggle('is-complete', length === 10);
+}
+
+function showPnrError(message) {
+  setFieldError(pnrInput, message);
+}
+
+/* Makes sure only digits can go into the PNR box (max 10) */
+function setUpPnrInput() {
+  // Stop letters/symbols as they are typed
+  pnrInput.addEventListener('beforeinput', function (event) {
+    const isTyping = event.inputType === 'insertText' && event.data;
+    if (isTyping && /[^\d\s-]/.test(event.data)) {
+      event.preventDefault();
+      showPnrError('Only digits 0–9 are allowed in a PNR.');
+    }
+  });
+
+  // Clean up anything else (paste, autofill, drag and drop): keep digits only, max 10
+  pnrInput.addEventListener('input', function () {
+    const typed = pnrInput.value;
+    const hadLettersOrSymbols = /[^\d\s-]/.test(typed);
+    let digits = typed.replace(/\D/g, ''); // remove everything that is not a digit
+    const wasTooLong = digits.length > 10;
+    digits = digits.slice(0, 10);
+
+    if (digits !== typed) {
+      pnrInput.value = digits;
+    }
+    updatePnrCounter(digits.length);
+
+    if (hadLettersOrSymbols) {
+      showPnrError('Letters and symbols were removed: a PNR contains digits only.');
+    } else if (wasTooLong) {
+      showPnrError('A PNR has exactly 10 digits, so the extra digits were removed.');
+    } else {
+      showPnrError('');
+    }
+  });
+
+  // When leaving the box with too few digits
+  pnrInput.addEventListener('blur', function () {
+    const length = pnrInput.value.length;
+    if (length > 0 && length < 10) {
+      showPnrError('Invalid PNR: please enter exactly 10 digits (' + length + ' entered).');
+    }
+  });
+}
+
+function showPnrErrorBlock(title, text) {
+  pnrResult.innerHTML = stateBlock({ tone: 'danger', iconName: 'xCircle', title: title, text: text });
+}
+
+/* A short summary like "2 of 3 passengers still on waitlist" */
+function pnrSummaryText(result) {
+  const total = result.summary.total;
+  const word = total === 1 ? 'passenger' : 'passengers';
+
+  let everyone;
+  if (total === 1) {
+    everyone = 'the passenger';
+  } else if (total === 2) {
+    everyone = 'both passengers';
+  } else {
+    everyone = 'all ' + total + ' passengers';
+  }
+
+  if (result.isCancelled) return 'booking cancelled for ' + everyone;
+  if (result.summary.wl) return result.summary.wl + ' of ' + total + ' ' + word + ' still on waitlist';
+  if (result.summary.rac) return result.summary.rac + ' of ' + total + ' ' + word + ' in RAC';
+  if (result.summary.can) return result.summary.cnf + ' confirmed, ' + result.summary.can + ' cancelled';
+  return everyone + ' confirmed';
+}
+
+/* What to show in the "Prediction" column for one passenger */
+function passengerPredictionHtml(passenger, result) {
+  const type = passenger.current.type;
+  const isPending = type === 'WL' || type === 'RAC';
+
+  if (type === 'CNF') {
+    return '<span class="muted small">Already confirmed</span>';
+  }
+  if (type === 'CAN') {
+    return '<span class="muted small">Cancelled</span>';
+  }
+  if (isPending && result.chartPrepared) {
+    return '<span class="muted small">Chart prepared: not confirmed</span>';
+  }
+  return predictionBadge({
+    statusType: type,
+    position: passenger.current.pos,
+    cls: result.cls,
+    quota: result.quota,
+    daysLeft: result.daysLeft,
+    popularity: result.popularity,
+    trainKey: result.train.number,
+    racPool: CANCELLATION_DATA.defaultRacPool[result.cls],
+  });
+}
+
+/* Shows the full PNR result card */
+function renderPnrResult(result) {
+  const travelClass = CLASSES[result.cls];
+  const quota = QUOTA_BY_CODE[result.quota];
+
+  // --- Chart badge ---
+  let chartBadge;
+  if (result.chartPrepared) {
+    chartBadge = '<span class="badge badge--success">' + icon('checkCircle') + '<span class="badge-text">Chart Prepared</span></span>';
+  } else {
+    chartBadge = '<span class="badge badge--neutral">' + icon('clock') + '<span class="badge-text">Chart Not Prepared</span></span>';
+  }
+
+  let sampleTag = '';
+  if (result.isSample) {
+    sampleTag = '<span class="tag tag--info">Sample</span>';
+  }
+
+  // --- Warning banner (cancelled, or still waitlisted after the chart) ---
+  let bannerHtml = '';
+  if (result.isCancelled) {
+    bannerHtml = `
+      <div class="note note--neutral" role="note">
+        ${icon('xCircle')}
+        <div>
+          <strong>This booking has been cancelled.</strong>
+          <p>Any refund is credited to the original payment method in 5–7 working days (simulated).</p>
+        </div>
+      </div>`;
+  } else if (result.chartPrepared && result.summary.wl) {
+    bannerHtml = `
+      <div class="note note--warning" role="note">
+        ${icon('alert')}
+        <div>
+          <strong>Chart prepared.</strong>
+          <p>Passengers still waitlisted after charting are not allowed to board on an e-ticket.</p>
+        </div>
+      </div>`;
+  }
+
+  // --- Journey details ---
+  let arrivalText = result.to.name + ' (' + result.to.code + ') · ' + formatTime(result.arrival);
+  if (result.arrivalDayOffset) {
+    arrivalText += ' (+' + result.arrivalDayOffset + ' day)';
+  }
+  const journeyRows = [
+    ['Train', result.train.number + ' ' + result.train.name],
+    ['Journey date', formatDateLong(result.journeyDate)],
+    ['Class', result.cls + ' · ' + travelClass.name],
+    ['Quota', quota.name + ' (' + quota.code + ')'],
+    ['Boarding', result.from.name + ' (' + result.from.code + ') · ' + formatTime(result.departure)],
+    ['Destination', arrivalText],
+  ];
+  let journeyHtml = '';
+  for (const row of journeyRows) {
+    journeyHtml += '<div class="journey-item"><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+  }
+
+  // --- Count chips: "3 passengers", "1 CNF", "2 WL" ---
+  const summary = result.summary;
+  let countsHtml = '<li>' + plural(summary.total, 'passenger') + '</li>';
+  if (summary.cnf) countsHtml += '<li>' + statusBadge('CNF', summary.cnf + ' CNF', 'sm') + '</li>';
+  if (summary.rac) countsHtml += '<li>' + statusBadge('RAC', summary.rac + ' RAC', 'sm') + '</li>';
+  if (summary.wl) countsHtml += '<li>' + statusBadge('WL', summary.wl + ' WL', 'sm') + '</li>';
+  if (summary.can) countsHtml += '<li>' + statusBadge('CAN', summary.can + ' CAN', 'sm') + '</li>';
+
+  // --- Passenger table ---
+  let passengerRowsHtml = '';
+  for (const passenger of result.passengers) {
+    passengerRowsHtml += `
+      <tr>
+        <th scope="row" data-label="Passenger">Passenger ${passenger.no}</th>
+        <td data-label="Booking status">${statusBadge(passenger.booking.type, passenger.bookingText)}</td>
+        <td data-label="Current status">${statusBadge(passenger.current.type, passenger.currentText)}</td>
+        <td data-label="Prediction">${passengerPredictionHtml(passenger, result)}</td>
+      </tr>`;
+  }
+
+  // --- Footer text ---
+  let chartText = 'The chart is usually prepared about 4 hours before departure. ';
+  if (result.chartPrepared) {
+    chartText = 'Final chart has been prepared. ';
+  }
+  const footerText =
+    'Checked at ' + formatClock(new Date()) + '. ' + chartText +
+    'Prediction = simulated chance of a confirmed berth, from past cancellations on this train ' +
+    '(HIGH above 70%, MEDIUM 35–70%, LOW below 35%).';
+
+  // --- Put it all together ---
+  pnrResult.innerHTML = `
+    <article class="card pnr-card" aria-labelledby="pnrResultTitle">
+      <header class="pnr-head">
+        <div>
+          <h2 id="pnrResultTitle" tabindex="-1">PNR <span class="mono">${escapeHtml(result.pnr)}</span></h2>
+          <p class="results-meta">${escapeHtml(capitalizeFirstLetter(pnrSummaryText(result)))}</p>
+        </div>
+        <div class="pnr-badges">${sampleTag}${chartBadge}</div>
+      </header>
+
+      ${bannerHtml}
+
+      <dl class="journey-grid">${journeyHtml}</dl>
+
+      <ul class="count-chips" aria-label="Status counts">${countsHtml}</ul>
+
+      <div class="table-wrap">
+        <table class="pnr-table">
+          <caption class="sr-only">Passenger status for PNR ${escapeHtml(result.pnr)}</caption>
+          <thead>
+            <tr>
+              <th scope="col">Passenger</th>
+              <th scope="col">Booking status</th>
+              <th scope="col">Current status</th>
+              <th scope="col">Prediction</th>
+            </tr>
+          </thead>
+          <tbody>${passengerRowsHtml}</tbody>
+        </table>
+      </div>
+
+      <p class="muted small">${escapeHtml(footerText)}</p>
+    </article>`;
+
+  // Move screen-reader focus to the result heading (without scrolling)
+  document.getElementById('pnrResultTitle').focus({ preventScroll: true });
+}
+
+/* Checks a PNR and shows the result (or an error) */
+function checkPnr(typedValue) {
+  // 1. Validate
+  const check = validatePnr(typedValue);
+  if (!check.valid) {
+    showPnrError(check.error);
+    pnrInput.focus();
+    showPnrErrorBlock('Invalid PNR', check.error + ' A PNR is the 10-digit number printed at the top of your ticket.');
+    if (check.error.startsWith('Invalid PNR')) {
+      showAlert('error', check.error);
+    } else {
+      showAlert('error', 'Invalid PNR: ' + check.error);
+    }
+    return;
+  }
+
+  pnrInput.value = check.pnr;
+  updatePnrCounter(10);
+  showPnrError('');
+
+  // 2. Look it up
+  const result = lookupPnr(check.pnr);
+
+  if (!result.found) {
+    showPnrErrorBlock('PNR ' + check.pnr + ' not found', result.reason);
+    showAlert('error', 'PNR ' + check.pnr + ' not found. Please check the number and try again.', 'PNR not found');
+    return;
+  }
+
+  // 3. Show it
+  renderPnrResult(result);
+
+  const message = 'PNR ' + result.pnr + ' checked: ' + pnrSummaryText(result) + '.';
+  if (result.isCancelled) {
+    showAlert('warning', message);
+  } else if (result.summary.wl || result.summary.rac) {
+    showAlert('info', message, 'PNR checked');
+  } else {
+    showAlert('success', message, 'PNR checked');
+  }
+}
+
+function setUpPnr() {
+  setUpPnrInput();
+
+  pnrForm.addEventListener('submit', function (event) {
+    event.preventDefault(); // stop the browser from reloading the page
+    checkPnr(pnrInput.value);
+  });
+
+  // "Try a sample PNR" buttons
+  const sampleBox = document.getElementById('sampleChips');
+  sampleBox.innerHTML = '';
+  for (const sample of SAMPLE_PNRS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'chip chip--' + sample.tone;
+    button.setAttribute('aria-label', 'Try sample PNR ' + sample.pnr + ' (' + sample.label + ')');
+    button.innerHTML = '<span class="mono">' + sample.pnr + '</span><span class="chip-sub">' + escapeHtml(sample.label) + '</span>';
+
+    button.addEventListener('click', function () {
+      pnrInput.value = sample.pnr;
+      updatePnrCounter(10);
+      checkPnr(sample.pnr);
     });
 
-    $('#sampleChips').replaceChildren(
-      ...data.SAMPLE_PNRS.map((s) => {
-        const chip = el(
-          'button',
-          { type: 'button', class: `chip chip--${s.tone}`, 'aria-label': `Try sample PNR ${s.pnr} (${s.label})` },
-          el('span', { class: 'mono' }, s.pnr),
-          el('span', { class: 'chip-sub' }, s.label)
-        );
-        chip.addEventListener('click', () => {
-          pnrEls.input.value = s.pnr;
-          updatePnrCounter(10);
-          checkPnr(s.pnr);
-        });
-        return chip;
-      })
-    );
-
-    pnrEls.result.replaceChildren(
-      stateBlock({
-        tone: 'neutral',
-        iconName: 'ticket',
-        title: 'Check a PNR',
-        text: 'Enter a 10-digit PNR or tap a sample above to see passenger-wise booking and current status.',
-      })
-    );
+    sampleBox.appendChild(button);
   }
 
-  /* ======================================================================
-   * 7. Init
-   * ==================================================================== */
+  // Message shown before the first check
+  pnrResult.innerHTML = stateBlock({
+    tone: 'neutral',
+    iconName: 'ticket',
+    title: 'Check a PNR',
+    text: 'Enter a 10-digit PNR or tap a sample above to see passenger-wise booking and current status.',
+  });
+}
 
-  function init() {
-    initSearch();
-    initPnr();
-    initTabs();
-  }
+/* ==========================================================================
+ * 8. Start the app
+ * ======================================================================== */
 
-  if (doc.readyState === 'loading') doc.addEventListener('DOMContentLoaded', init);
-  else init();
-})(window, document);
+function startApp() {
+  setUpSearch();
+  setUpPnr();
+  setUpTabs();
+}
+
+startApp();

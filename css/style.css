@@ -7,8 +7,8 @@
      1. Variables              6. Train cards and class cards
      2. Base and helpers       7. PNR tracker
      3. Header and tabs        8. Confirmation prediction
-     4. Cards and forms        9. Toasts
-     5. Badges, chips, notes  10. Animations and responsive rules
+     4. Cards and forms        9. Animations and responsive rules
+     5. Badges, chips, notes
    ========================================================================== */
 
 /* ---------- 1. Variables ---------- */
@@ -1138,116 +1138,7 @@ main {
   font-size: 0.78rem;
 }
 
-/* ---------- 9. Toasts ---------- */
-.toast-region {
-  position: fixed;
-  z-index: 80;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  pointer-events: none;
-}
-
-.toast {
-  position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 10px 12px 12px;
-  overflow: hidden;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--blue-solid);
-  border-radius: var(--radius);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-  pointer-events: auto;
-  animation: toast-in 0.2s ease-out;
-}
-
-.toast--leaving {
-  animation: toast-out 0.2s ease-in forwards;
-}
-
-.toast-icon {
-  margin-top: 2px;
-}
-
-.toast-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.toast-title {
-  font-size: 0.9rem;
-  font-weight: 700;
-}
-
-.toast-msg {
-  font-size: 0.88rem;
-  overflow-wrap: anywhere;
-}
-
-.toast-close {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  flex: none;
-  border: 0;
-  border-radius: 4px;
-  background: none;
-  color: var(--text-muted);
-}
-
-.toast-close:hover {
-  background: var(--gray-bg);
-}
-
-/* Thin bar that shrinks over the 5 second auto-dismiss time */
-.toast-progress {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  width: 100%;
-  height: 3px;
-  transform-origin: left;
-  animation: toast-progress 5s linear forwards;
-}
-
-.toast.is-paused .toast-progress {
-  animation-play-state: paused;
-}
-
-.toast--success { border-left-color: var(--green-solid); }
-.toast--success .toast-icon { color: var(--green); }
-.toast--success .toast-progress { background: var(--green-solid); }
-.toast--warning { border-left-color: var(--amber-solid); }
-.toast--warning .toast-icon { color: var(--amber); }
-.toast--warning .toast-progress { background: var(--amber-solid); }
-.toast--error { border-left-color: var(--red-solid); }
-.toast--error .toast-icon { color: var(--red); }
-.toast--error .toast-progress { background: var(--red-solid); }
-.toast--info { border-left-color: var(--blue-solid); }
-.toast--info .toast-icon { color: var(--blue); }
-.toast--info .toast-progress { background: var(--blue-solid); }
-
-/* ---------- 10. Animations and responsive rules ---------- */
-@keyframes toast-in {
-  from { opacity: 0; transform: translateY(10px); }
-}
-
-@keyframes toast-out {
-  to { opacity: 0; }
-}
-
-@keyframes toast-progress {
-  from { transform: scaleX(1); }
-  to { transform: scaleX(0); }
-}
-
+/* ---------- 9. Animations and responsive rules ---------- */
 /* Respect users who turn off animations */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -1256,10 +1147,6 @@ main {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
-  }
-
-  .toast-progress {
-    animation: none;
   }
 }
 
@@ -1310,13 +1197,6 @@ main {
   .pnr-row .btn {
     margin-top: 29px;
   }
-
-  .toast-region {
-    left: auto;
-    right: 20px;
-    bottom: 20px;
-    width: 360px;
-  }
 }
 
 /* Desktop */
@@ -1331,7 +1211,6 @@ main {
 @media (forced-colors: active) {
   .badge,
   .class-card,
-  .toast,
   .chip {
     border: 1px solid CanvasText;
   }

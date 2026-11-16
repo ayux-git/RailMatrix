@@ -11,23 +11,23 @@ A responsive, accessible web app that **simulates** Indian Railways berth availa
 1. Download or clone the project folder.
 2. Double-click **`index.html`** to open it in any modern browser (Chrome, Edge, Firefox, Safari).
 
-That's it. The scripts are plain IIFEs rather than ES modules, so the app also works from `file://`, where browsers block module scripts. If you prefer a local server, any static server works, for example `npx serve .` or `python -m http.server`.
+That's it. The scripts are plain `<script>` files rather than ES modules, so the app also works from `file://`, where browsers block module scripts. If you prefer a local server, any static server works, for example `npx serve .` or `python -m http.server`.
 
 ## File structure
 
 ```
-index.html          Page shell: header, two tabs (Search, PNR Status), toast region
+index.html          Page shell: header, two tabs (Search, PNR Status)
 css/style.css       Mobile-first, minimal light styles using CSS variables
 js/data.js          Seeded RNG, date helpers, stations, classes, quotas, train types,
                     festival seasons, train/availability/fare generators,
                     historical cancellation data, sample PNRs
 js/probability.js   Waitlist / RAC confirmation probability model
 js/pnr.js           PNR validation and deterministic PNR status simulation
-js/app.js           UI: rendering, events, validation, toasts, inline predictions
+js/app.js           UI: rendering, events, validation, alert pop-ups, inline predictions
 README.md           This file
 ```
 
-Every script attaches to a single global namespace, `window.RailMatrix`, so nothing else leaks into global scope.
+The code is written to be easy for beginners to read: plain functions, simple loops, and comments that explain each step. The scripts are loaded in order (`data.js` → `probability.js` → `pnr.js` → `app.js`), and each file can use the functions and constants declared in the files loaded before it.
 
 ## Features
 
@@ -37,7 +37,7 @@ Every script attaches to a single global namespace, `window.RailMatrix`, so noth
 - Date picker limited to **today … today + 120 days**.
 - **Inline validation** under each field, with `aria-invalid` and `aria-describedby`. It catches empty fields, unknown stations, same origin and destination, invalid, past or too-far dates, and a missing quota.
 - **Quota rules:**
-  - **Tatkal and Premium Tatkal** are only bookable for journeys today or tomorrow, the "next 2 days". Any other date shows a warning note and a warning toast. Cards then show "NOT OPEN YET" with the opening date and time.
+  - **Tatkal and Premium Tatkal** are only bookable for journeys today or tomorrow, the "next 2 days". Any other date shows a warning note and a warning alert. Cards then show "NOT OPEN YET" with the opening date and time.
   - **Senior Citizen, Ladies, Divyang and Foreign Tourist** show an eligibility info note.
 - Results show 5–8 trains filtered logically for the route:
   - Rajdhani only runs on Delhi routes of 400 km or more.
@@ -84,12 +84,9 @@ Every script attaches to a single global namespace, `window.RailMatrix`, so noth
 - Confirmed passengers show “Already confirmed”, and cancelled ones show “Cancelled”. If the chart is already prepared, waitlisted passengers show “Chart prepared: not confirmed”.
 
 ### 4. Alerts and notifications
-- Custom **toasts** for success, warning, error and info:
-  - Each has a distinct colour and icon.
-  - They stack (max 4) and auto-dismiss after 5 seconds, with a progress bar.
-  - Hovering or focusing a toast pauses it, and each has a close button.
-  - They sit in an `aria-live="polite"` region.
-- Toasts fire for search results, validation errors, Tatkal window warnings, PNR checks, not-found PNRs and availability refreshes.
+- Messages are shown with the browser's built-in **`alert()`** pop-up, which appears on top of the page until the user presses OK.
+  - Each message has a title for its type: ✅ Success, ⚠️ Warning, ❌ Error or ℹ️ Info (or a custom title such as "PNR checked").
+- Alerts appear for search results, validation errors, Tatkal window warnings, PNR checks, not-found PNRs and availability refreshes.
 
 ### UI, UX and accessibility
 - Mobile-first layout tested at 360 px, tablet and desktop, using CSS Grid, Flexbox and CSS variables.
@@ -98,7 +95,7 @@ Every script attaches to a single global namespace, `window.RailMatrix`, so noth
 - Results appear instantly after submitting, with no loading screen.
 - Empty and error states in every section.
 - Semantic HTML, a label on every input, a skip link, visible focus rings, `prefers-reduced-motion` support and forced-colours support.
-- **Safe rendering:** user input never goes through `innerHTML`. All DOM is built with `createElement` and `textContent`.
+- **Safe rendering:** HTML is built with template strings, and every piece of user input or data text goes through `escapeHtml()` first, so it is always shown as plain text and never run as HTML.
 
 ## How the simulation works
 
@@ -106,7 +103,7 @@ Every script attaches to a single global namespace, `window.RailMatrix`, so noth
 `data.js` hashes a list of keys into a 32-bit seed (cyrb53-style), then feeds a **Mulberry32** PRNG:
 
 ```js
-createRng('avl', trainNo, date, quota, cls)   // same keys → same numbers, every time
+createRandomGenerator(['avl', trainNo, date, quota, cls])   // same keys → same numbers, every time
 ```
 
 ### Trains for a route

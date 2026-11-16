@@ -1,246 +1,351 @@
-/**
+/*
  * pnr.js
  * ---------------------------------------------------------------------------
- * PNR validation and deterministic PNR status simulation.
+ * Everything about PNR numbers:
  *
- *  - validate(raw)  : strips spaces/hyphens, rejects letters, requires 10 digits
- *  - lookup(pnr)    : returns a simulated booking. The same PNR always gives the
- *                     same result (seeded by the PNR itself).
+ *   validatePnr(text) - checks what the user typed (spaces and hyphens are
+ *                       removed, letters are not allowed, must be 10 digits)
+ *   lookupPnr(pnr)    - returns a simulated booking for a PNR. The same PNR
+ *                       always gives the same booking.
  *
  * Simulator rules:
- *  - The four sample PNRs in data.js return fixed, hand-made scenarios.
- *  - PNRs starting with 0 or 9, or made of one repeated digit, are "not found".
- *  - Every other 10-digit PNR generates a booking on a real simulated route.
+ *   - The 4 sample PNRs in data.js return fixed, hand-made bookings.
+ *   - PNRs that start with 0 or 9, or use one digit 10 times (like
+ *     5555555555), are "not found".
+ *   - Any other 10-digit PNR makes up a booking on a simulated train.
  *
- * Status model: every ticket sits in one queue.
- *   rank 0 = confirmed, 1..R = RAC 1..R, R+1.. = WL 1..
- * Passengers on one PNR move together, so their statuses stay consistent.
+ * How passenger status works here:
+ *   Think of every ticket as standing in ONE queue:
+ *     rank 0          = confirmed
+ *     rank 1 to R     = RAC 1 to RAC R   (R = number of RAC places)
+ *     rank R+1 and up = WL 1, WL 2, ...
+ *   All passengers on one PNR move forward in the queue together.
  *
- * Depends on: data.js
+ * Uses functions and data from data.js.
  * ---------------------------------------------------------------------------
  */
-(function (global) {
-  'use strict';
 
-  const RailMatrix = global.RailMatrix;
-  const { data, dates, rng: rngLib } = RailMatrix;
-  const { createRng } = rngLib;
+/* ==========================================================================
+ * Validation
+ * ======================================================================== */
 
-  /* ======================================================================
-   * Validation
-   * ==================================================================== */
-
-  /** Clean user input: remove whitespace and hyphens, keep everything else for checking. */
-  function normalize(raw) {
-    return String(raw == null ? '' : raw).replace(/[\s-]+/g, '');
+/* Removes spaces and hyphens: "452-189 6307" -> "4521896307" */
+function cleanPnrInput(text) {
+  if (text === null || text === undefined) {
+    text = '';
   }
+  return String(text).replace(/[\s-]+/g, '');
+}
 
-  /**
-   * @returns {{ valid: boolean, pnr: string, error: string|null }}
-   */
-  function validate(raw) {
-    const cleaned = normalize(raw);
-    if (!cleaned) return { valid: false, pnr: '', error: 'Please enter your 10-digit PNR number.' };
-    if (/\D/.test(cleaned)) return { valid: false, pnr: cleaned, error: 'PNR can contain digits only (0–9).' };
-    if (cleaned.length !== 10) {
-      return { valid: false, pnr: cleaned, error: 'Invalid PNR: please enter exactly 10 digits.' };
-    }
-    return { valid: true, pnr: cleaned, error: null };
+/*
+ * Checks a PNR typed by the user.
+ * Returns { valid: true/false, pnr: cleaned text, error: message or null }
+ */
+function validatePnr(text) {
+  const cleaned = cleanPnrInput(text);
+
+  if (cleaned === '') {
+    return { valid: false, pnr: '', error: 'Please enter your 10-digit PNR number.' };
   }
-
-  /* ======================================================================
-   * Status helpers
-   * ==================================================================== */
-
-  /** Human-readable status, e.g. "CNF S4/32 Lower", "RAC 2", "WL 5", "CAN". */
-  function formatStatus(s, cls) {
-    switch (s.type) {
-      case 'CNF':
-        return `CNF ${s.coach}/${s.berth} ${data.berthTypeFor(cls, s.berth)}`;
-      case 'RAC':
-        return `RAC ${s.pos}`;
-      case 'WL':
-        return `WL ${s.pos}`;
-      default:
-        return 'CAN';
-    }
+  if (/\D/.test(cleaned)) {
+    // \D means "any character that is not a digit"
+    return { valid: false, pnr: cleaned, error: 'PNR can contain digits only (0–9).' };
   }
+  if (cleaned.length !== 10) {
+    return { valid: false, pnr: cleaned, error: 'Invalid PNR: please enter exactly 10 digits.' };
+  }
+  return { valid: true, pnr: cleaned, error: null };
+}
 
-  /* ======================================================================
-   * Result builder (shared by samples and generated PNRs)
-   * ==================================================================== */
+/* ==========================================================================
+ * Status text
+ * ======================================================================== */
 
-  function buildResult(spec) {
-    const journeyDate = dates.addDays(dates.startOfToday(), spec.journeyOffset);
-    const passengers = spec.passengers.map((p, i) => {
-      return {
-        no: i + 1,
-        booking: p.booking,
-        current: p.current,
-        bookingText: formatStatus(p.booking, spec.cls),
-        currentText: formatStatus(p.current, spec.cls),
-      };
+/* Status object -> text, e.g. "CNF S4/32 Side Upper", "RAC 2", "WL 5", "CAN" */
+function formatTicketStatus(status, classCode) {
+  if (status.type === 'CNF') {
+    return 'CNF ' + status.coach + '/' + status.berth + ' ' + berthTypeFor(classCode, status.berth);
+  }
+  if (status.type === 'RAC') {
+    return 'RAC ' + status.pos;
+  }
+  if (status.type === 'WL') {
+    return 'WL ' + status.pos;
+  }
+  return 'CAN';
+}
+
+/* ==========================================================================
+ * Build the final result object (used for both samples and made-up PNRs)
+ * ======================================================================== */
+
+function buildPnrResult(booking) {
+  const journeyDate = addDays(startOfToday(), booking.journeyOffset);
+
+  // Add a passenger number and readable status text to each passenger
+  const passengers = [];
+  for (let i = 0; i < booking.passengers.length; i++) {
+    const p = booking.passengers[i];
+    passengers.push({
+      no: i + 1,
+      booking: p.booking,
+      current: p.current,
+      bookingText: formatTicketStatus(p.booking, booking.cls),
+      currentText: formatTicketStatus(p.current, booking.cls),
     });
-    const count = (type) => passengers.filter((p) => p.current.type === type).length;
-    const summary = { total: passengers.length, cnf: count('CNF'), rac: count('RAC'), wl: count('WL'), can: count('CAN') };
-
-    return {
-      found: true,
-      pnr: spec.pnr,
-      isSample: !!spec.isSample,
-      train: spec.train,
-      popularity: data.popularityForTrainNumber(spec.train.number),
-      from: data.STATION_BY_CODE[spec.from],
-      to: data.STATION_BY_CODE[spec.to],
-      departure: spec.departure,
-      arrival: spec.departure + spec.duration,
-      arrivalDayOffset: Math.floor((spec.departure + spec.duration) / 1440),
-      journeyDate,
-      daysLeft: spec.journeyOffset,
-      cls: spec.cls,
-      quota: spec.quota,
-      chartPrepared: spec.chartPrepared,
-      isCancelled: summary.can === summary.total,
-      passengers,
-      summary,
-    };
   }
 
-  /* ======================================================================
-   * Random (seeded) booking generator
-   * ==================================================================== */
+  // Count passengers by their CURRENT status
+  const summary = { total: passengers.length, cnf: 0, rac: 0, wl: 0, can: 0 };
+  for (const p of passengers) {
+    if (p.current.type === 'CNF') summary.cnf++;
+    if (p.current.type === 'RAC') summary.rac++;
+    if (p.current.type === 'WL') summary.wl++;
+    if (p.current.type === 'CAN') summary.can++;
+  }
 
-  function pickRoute(rng) {
-    for (let attempt = 0; attempt < 40; attempt++) {
-      const from = rng.pick(data.STATIONS);
-      const to = rng.pick(data.STATIONS);
-      if (from.code === to.code || from.city === to.city) continue;
-      if (data.distanceKm(from, to) < 200) continue;
-      const offset = rng.int(0, 45);
-      const dateISO = dates.toISODate(dates.addDays(dates.startOfToday(), offset));
-      const { trains } = data.getTrainsForRoute(from.code, to.code, dateISO);
-      if (trains.length) return { from, to, offset, train: rng.pick(trains) };
+  const arrival = booking.departure + booking.duration;
+
+  return {
+    found: true,
+    pnr: booking.pnr,
+    isSample: booking.isSample === true,
+    train: booking.train,
+    popularity: popularityForTrainNumber(booking.train.number),
+    from: STATION_BY_CODE[booking.from],
+    to: STATION_BY_CODE[booking.to],
+    departure: booking.departure,
+    arrival: arrival,
+    arrivalDayOffset: Math.floor(arrival / 1440), // 1 = arrives the next day
+    journeyDate: journeyDate,
+    daysLeft: booking.journeyOffset,
+    cls: booking.cls,
+    quota: booking.quota,
+    chartPrepared: booking.chartPrepared,
+    isCancelled: summary.can === summary.total, // every passenger cancelled
+    passengers: passengers,
+    summary: summary,
+  };
+}
+
+/* ==========================================================================
+ * Make up a booking for any other PNR
+ * --------------------------------------------------------------------------
+ * The random generator is seeded with the PNR itself, so the same PNR
+ * always gives the same booking.
+ *
+ * Important: the ORDER of the random calls below decides the result.
+ * Changing the order would change which booking each PNR shows.
+ * ======================================================================== */
+
+/* Picks two far-apart stations, a date, and a train that runs that day. */
+function pickRandomRoute(random) {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const fromStation = random.pick(STATIONS);
+    const toStation = random.pick(STATIONS);
+
+    // Same station or same city? Try again.
+    if (fromStation.code === toStation.code || fromStation.city === toStation.city) {
+      continue;
     }
+    // Too close? Try again.
+    if (distanceKm(fromStation, toStation) < 200) {
+      continue;
+    }
+
+    const daysAhead = random.int(0, 45);
+    const dateISO = toISODate(addDays(startOfToday(), daysAhead));
+    const trains = getTrainsForRoute(fromStation.code, toStation.code, dateISO).trains;
+
+    if (trains.length > 0) {
+      return { offset: daysAhead, train: random.pick(trains) };
+    }
+  }
+  return null; // could not find a route (very rare)
+}
+
+/*
+ * Turns a queue rank into a status (see the explanation at the top of this file).
+ * seat is only used when the rank means "confirmed".
+ */
+function statusFromRank(rank, racPool, seat) {
+  if (rank <= 0) {
+    return { type: 'CNF', coach: seat.coach, berth: seat.berth };
+  }
+  if (rank <= racPool) {
+    return { type: 'RAC', pos: rank };
+  }
+  return { type: 'WL', pos: rank - racPool };
+}
+
+function generateRandomBooking(pnr) {
+  const random = createRandomGenerator(['pnr', pnr]);
+
+  const route = pickRandomRoute(random);
+  if (route === null) {
     return null;
   }
+  const train = route.train;
+  const daysAhead = route.offset;
 
-  function generate(pnr) {
-    const rng = createRng('pnr', pnr);
-    const route = pickRoute(rng);
-    if (!route) return null;
-    const { train, offset } = route;
-    const cls = rng.pick(train.classes);
-    const c = data.CLASSES[cls];
+  const cls = random.pick(train.classes);
+  const travelClass = CLASSES[cls];
 
-    // Quota: Tatkal could only have been booked within its window.
-    let quota = rng.weighted([
-      { value: 'GN', weight: 70 },
-      { value: 'TQ', weight: 12 },
-      { value: 'SS', weight: 8 },
-      { value: 'LD', weight: 4 },
-      { value: 'HP', weight: 3 },
-      { value: 'PT', weight: 3 },
-    ]);
-    if (!data.isQuotaOffered(quota, cls)) quota = 'GN';
-    if (data.QUOTA_BY_CODE[quota].isTatkal && offset > data.RULES.TATKAL_MAX_DAYS_AHEAD) quota = 'GN';
+  // Quota (most bookings are General)
+  let quota = random.weighted([
+    { value: 'GN', weight: 70 },
+    { value: 'TQ', weight: 12 },
+    { value: 'SS', weight: 8 },
+    { value: 'LD', weight: 4 },
+    { value: 'HP', weight: 3 },
+    { value: 'PT', weight: 3 },
+  ]);
+  if (!isQuotaOffered(quota, cls)) {
+    quota = 'GN';
+  }
+  // Tatkal can only be booked for today or tomorrow
+  if (QUOTA_BY_CODE[quota].isTatkal && daysAhead > RULES.TATKAL_MAX_DAYS_AHEAD) {
+    quota = 'GN';
+  }
 
-    const paxCount = rng.weighted([
-      { value: 1, weight: 30 },
-      { value: 2, weight: 30 },
-      { value: 3, weight: 18 },
-      { value: 4, weight: 12 },
-      { value: 5, weight: 6 },
-      { value: 6, weight: 4 },
-    ]);
+  // Number of passengers on the ticket (1 to 6)
+  const passengerCount = random.weighted([
+    { value: 1, weight: 30 },
+    { value: 2, weight: 30 },
+    { value: 3, weight: 18 },
+    { value: 4, weight: 12 },
+    { value: 5, weight: 6 },
+    { value: 6, weight: 4 },
+  ]);
 
-    const racPool = data.CANCELLATION_DATA.defaultRacPool[cls] || 0;
-    const fromRank = (q, berthBase) => {
-      if (q <= 0) return { type: 'CNF', coach: berthBase.coach, berth: berthBase.berth };
-      if (q <= racPool) return { type: 'RAC', pos: q };
-      return { type: 'WL', pos: q - racPool };
-    };
-    const seatBlock = () => ({
-      coach: `${c.coachPrefix}${rng.int(1, c.coaches)}`,
-      start: rng.int(1, c.berthsPerCoach - paxCount),
+  const racPool = CANCELLATION_DATA.defaultRacPool[cls] || 0;
+
+  // Picks a coach and the first berth number for a group of passengers
+  function pickSeatBlock() {
+    const coach = travelClass.coachPrefix + random.int(1, travelClass.coaches);
+    const firstBerth = random.int(1, travelClass.berthsPerCoach - passengerCount);
+    return { coach: coach, start: firstBerth };
+  }
+
+  const isCancelled = random.chance(0.06); // about 6% of bookings are cancelled
+
+  // What status did the ticket have when it was booked?
+  let racWeight = 0;
+  if (racPool) {
+    racWeight = 15;
+  }
+  const bookedAs = random.weighted([
+    { value: 'CNF', weight: 35 },
+    { value: 'RAC', weight: racWeight },
+    { value: 'WL', weight: 50 },
+  ]);
+
+  // Queue rank of passenger 1 at booking time (0 = confirmed)
+  let firstRank = 0;
+  if (bookedAs === 'RAC') {
+    firstRank = random.int(1, Math.max(1, racPool - passengerCount));
+  }
+  if (bookedAs === 'WL') {
+    firstRank = racPool + random.int(1, 90);
+  }
+
+  // How many places the whole PNR has moved forward since booking
+  let moved = 0;
+  if (firstRank > 0) {
+    const roll = random.next();
+    if (roll < 0.3) {
+      moved = 0; // 30%: no change since booking
+    } else {
+      const factor = random.range(0.3, 1.3);
+      const maxMove = Math.max(2, Math.round((firstRank + passengerCount) * factor));
+      moved = random.int(1, maxMove);
+    }
+  }
+
+  const bookedSeats = pickSeatBlock(); // seats given at booking time (if confirmed then)
+  const newSeats = pickSeatBlock(); // seats given later to passengers who got confirmed
+
+  let newlyConfirmed = 0;
+  const passengers = [];
+
+  for (let i = 0; i < passengerCount; i++) {
+    // Rank of this passenger when booked
+    let bookingRank = 0;
+    if (firstRank !== 0) {
+      bookingRank = firstRank + i;
+    }
+    const bookingStatus = statusFromRank(bookingRank, racPool, {
+      coach: bookedSeats.coach,
+      berth: bookedSeats.start + i,
     });
 
-    const cancelled = rng.chance(0.06);
-    const kind = rng.weighted([
-      { value: 'CNF', weight: 35 },
-      { value: 'RAC', weight: racPool ? 15 : 0 },
-      { value: 'WL', weight: 50 },
-    ]);
-
-    // Starting queue rank of passenger 1 at booking time
-    let q0 = 0;
-    if (kind === 'RAC') q0 = rng.int(1, Math.max(1, racPool - paxCount));
-    if (kind === 'WL') q0 = racPool + rng.int(1, 90);
-
-    // How far the whole PNR moved since booking
-    let shift = 0;
-    if (q0 > 0) {
-      const r = rng.next();
-      if (r < 0.3) shift = 0; // no change since booking
-      else shift = rng.int(1, Math.max(2, Math.round((q0 + paxCount) * rng.range(0.3, 1.3))));
-    }
-
-    const bookedSeats = seatBlock();
-    const newSeats = seatBlock();
-    let newlyConfirmed = 0;
-    const passengers = [];
-    for (let i = 0; i < paxCount; i++) {
-      const qb = q0 === 0 ? 0 : q0 + i;
-      const booking = fromRank(qb, { coach: bookedSeats.coach, berth: bookedSeats.start + i });
-      let current;
-      if (cancelled) {
-        current = { type: 'CAN' };
-      } else if (qb === 0) {
-        current = booking;
-      } else {
-        const qc = qb - shift;
-        current = fromRank(qc, { coach: newSeats.coach, berth: newSeats.start + newlyConfirmed });
-        if (current.type === 'CNF') newlyConfirmed++;
+    // Status now
+    let currentStatus;
+    if (isCancelled) {
+      currentStatus = { type: 'CAN' };
+    } else if (bookingRank === 0) {
+      currentStatus = bookingStatus; // was confirmed from the start
+    } else {
+      const currentRank = bookingRank - moved;
+      currentStatus = statusFromRank(currentRank, racPool, {
+        coach: newSeats.coach,
+        berth: newSeats.start + newlyConfirmed,
+      });
+      if (currentStatus.type === 'CNF') {
+        newlyConfirmed++;
       }
-      passengers.push({ booking, current });
     }
 
-    return buildResult({
-      pnr,
-      train: { number: train.number, name: train.name },
-      from: train.from,
-      to: train.to,
-      departure: train.departure,
-      duration: train.duration,
-      journeyOffset: offset,
-      cls,
-      quota,
-      chartPrepared: offset === 0,
-      passengers,
-    });
+    passengers.push({ booking: bookingStatus, current: currentStatus });
   }
 
-  /* ======================================================================
-   * Lookup
-   * ==================================================================== */
+  return buildPnrResult({
+    pnr: pnr,
+    train: { number: train.number, name: train.name },
+    from: train.from,
+    to: train.to,
+    departure: train.departure,
+    duration: train.duration,
+    journeyOffset: daysAhead,
+    cls: cls,
+    quota: quota,
+    chartPrepared: daysAhead === 0, // the chart is ready only on the day of the journey
+    passengers: passengers,
+  });
+}
 
-  /**
-   * @param {string} pnr a validated 10-digit PNR
-   * @returns {object} { found: false, pnr, reason } or a full result (see buildResult)
-   */
-  function lookup(pnr) {
-    const sample = data.SAMPLE_PNRS.find((s) => s.pnr === pnr);
-    if (sample) return buildResult({ ...sample, isSample: true });
+/* ==========================================================================
+ * Lookup
+ * ======================================================================== */
 
-    if (/^[09]/.test(pnr) || /^(\d)\1{9}$/.test(pnr)) {
-      return {
-        found: false,
-        pnr,
-        reason: 'No booking matches this PNR. It may be mistyped, or the record was flushed after the journey was completed.',
-      };
+/*
+ * Finds the booking for an already-validated 10-digit PNR.
+ * Returns either { found: false, pnr, reason } or a full result (see buildPnrResult).
+ */
+function lookupPnr(pnr) {
+  // 1. Is it one of the sample PNRs?
+  for (const sample of SAMPLE_PNRS) {
+    if (sample.pnr === pnr) {
+      const booking = Object.assign({}, sample, { isSample: true });
+      return buildPnrResult(booking);
     }
-    const result = generate(pnr);
-    return result || { found: false, pnr, reason: 'This PNR could not be simulated. Please try another number.' };
   }
 
-  RailMatrix.pnr = Object.freeze({ validate, lookup, formatStatus });
-})(window);
+  // 2. Simulator rule: starts with 0 or 9, or is one digit repeated 10 times -> not found
+  const startsWith0or9 = pnr[0] === '0' || pnr[0] === '9';
+  const allSameDigit = pnr === pnr[0].repeat(10);
+  if (startsWith0or9 || allSameDigit) {
+    return {
+      found: false,
+      pnr: pnr,
+      reason: 'No booking matches this PNR. It may be mistyped, or the record was flushed after the journey was completed.',
+    };
+  }
+
+  // 3. Otherwise make up a booking
+  const result = generateRandomBooking(pnr);
+  if (result === null) {
+    return { found: false, pnr: pnr, reason: 'This PNR could not be simulated. Please try another number.' };
+  }
+  return result;
+}
